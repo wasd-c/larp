@@ -72,6 +72,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -89,6 +90,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -121,7 +123,8 @@ fun ExercisesScreen(
     onRecognizeAnswer: suspend (String) -> String = { "" },
     onImportText: suspend (String) -> Unit = {},
     onImportYoutube: suspend (String) -> Unit = {},
-    onExerciseProgressChanged: (Boolean) -> Unit = {}
+    onExerciseProgressChanged: (Boolean) -> Unit = {},
+    onExerciseOpenChanged: (Boolean) -> Unit = {}
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var remixId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -131,6 +134,12 @@ fun ExercisesScreen(
     val searchRevealState = remember { LibrarySearchRevealState() }
     var importKind by rememberSaveable {
         mutableStateOf<ExerciseImportKind?>(null)
+    }
+    LaunchedEffect(selectedId != null) {
+        onExerciseOpenChanged(selectedId != null)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onExerciseOpenChanged(false) }
     }
     LaunchedEffect(requestedOpenId) {
         if (requestedOpenId != null && exercises.any { it.id == requestedOpenId }) {
@@ -184,15 +193,7 @@ fun ExercisesScreen(
                 },
                 onSpeakWord = onSpeakWord,
                 onRecognizeAnswer = onRecognizeAnswer,
-                onExerciseProgressChanged = onExerciseProgressChanged,
-                onFilterRequested = { filter ->
-                    when (filter.kind) {
-                        ExerciseFilterKind.DIFFICULTY -> difficultyFilter = filter.label
-                        ExerciseFilterKind.TOPIC -> topicFilter = filter.label
-                    }
-                    searchRevealState.show()
-                    selectedId = null
-                }
+                onExerciseProgressChanged = onExerciseProgressChanged
             )
         } else {
             ExerciseLibrary(
@@ -1094,8 +1095,7 @@ private fun ExerciseDetail(
     onRateDifficulty: (Int) -> Unit,
     onSpeakWord: suspend (String, String) -> Unit,
     onRecognizeAnswer: suspend (String) -> String,
-    onExerciseProgressChanged: (Boolean) -> Unit,
-    onFilterRequested: (ExerciseFilter) -> Unit
+    onExerciseProgressChanged: (Boolean) -> Unit
 ) {
     var hasUnsavedProgress by remember(exercise.id) { mutableStateOf(false) }
     var pendingExitAction by remember(exercise.id) {
@@ -1125,52 +1125,18 @@ private fun ExerciseDetail(
             onConfirm = ::confirmExit
         )
     }
-    ContentDetailSurface(
-        title = exercise.title,
-        languageTag = exercise.languageTag,
-        onBack = { requestExit(onBack) }
-    ) {
-        item {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SuggestionChip(
-                    onClick = {
-                        requestExit {
-                            onFilterRequested(
-                                ExerciseFilter(
-                                    ExerciseFilterKind.DIFFICULTY,
-                                    exercise.difficulty.frenchLabel
-                                )
-                            )
-                        }
-                    },
-                    label = { Text(exercise.difficulty.frenchLabel) }
-                )
-                SuggestionChip(
-                    onClick = {
-                        requestExit {
-                            onFilterRequested(
-                                ExerciseFilter(ExerciseFilterKind.TOPIC, exercise.topic)
-                            )
-                        }
-                    },
-                    label = { Text(exercise.topic) }
-                )
-            }
+    ExercisePlayer(
+        exercise = exercise,
+        onBack = { requestExit(onBack) },
+        onSpeakWord = onSpeakWord,
+        onRecognizeAnswer = onRecognizeAnswer,
+        onComplete = onComplete,
+        onRateDifficulty = onRateDifficulty,
+        onProgressChanged = {
+            hasUnsavedProgress = it
+            onExerciseProgressChanged(it)
         }
-        item {
-            ExercisePlayer(
-                exercise = exercise,
-                onSpeakWord = onSpeakWord,
-                onRecognizeAnswer = onRecognizeAnswer,
-                onComplete = onComplete,
-                onRateDifficulty = onRateDifficulty,
-                onProgressChanged = {
-                    hasUnsavedProgress = it
-                    onExerciseProgressChanged(it)
-                }
-            )
-        }
-    }
+    )
 }
 
 @Composable
@@ -1180,12 +1146,9 @@ internal fun UnsavedExerciseExitDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Quitter l’exercice ?") },
+        title = { Text(stringResource(com.anis.larp.R.string.exercise_exit_title)) },
         text = {
-            Text(
-                "Votre progression actuelle n’est pas enregistrée. " +
-                    "Si vous quittez maintenant, vous devrez recommencer cet exercice."
-            )
+            Text(stringResource(com.anis.larp.R.string.exercise_exit_message))
         },
         confirmButton = {
             TextButton(
@@ -1194,12 +1157,12 @@ internal fun UnsavedExerciseExitDialog(
                     contentColor = MaterialTheme.colorScheme.error
                 )
             ) {
-                Text("Quitter")
+                Text(stringResource(com.anis.larp.R.string.exercise_exit_confirm))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Continuer l’exercice")
+                Text(stringResource(com.anis.larp.R.string.exercise_exit_dismiss))
             }
         },
         shape = MaterialTheme.shapes.extraLarge

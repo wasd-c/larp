@@ -5,31 +5,58 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Lightbulb
-import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
+import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -37,6 +64,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -53,20 +82,38 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.anis.larp.R
 import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.ExerciseCompletion
 import com.anis.larp.learning.LearnedWord
@@ -74,12 +121,15 @@ import java.text.Normalizer
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.random.Random
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun ExercisePlayer(
     exercise: Exercise,
+    onBack: () -> Unit = {},
     onSpeakWord: suspend (String, String) -> Unit = { _, _ -> },
     onRecognizeAnswer: suspend (String) -> String = { "" },
     onComplete: (mistakes: Int, elapsedMillis: Long, hintsUsed: Int) -> Unit = { _, _, _ -> },
@@ -87,6 +137,7 @@ internal fun ExercisePlayer(
     onProgressChanged: (Boolean) -> Unit = {}
 ) {
     var step by rememberSaveable(exercise.id) { mutableIntStateOf(1) }
+    var furthestUnlockedStep by rememberSaveable(exercise.id) { mutableIntStateOf(1) }
     var mistakes by rememberSaveable(exercise.id) { mutableIntStateOf(0) }
     var hintsUsed by rememberSaveable(exercise.id) { mutableIntStateOf(0) }
     val startedAt = rememberSaveable(exercise.id) { System.currentTimeMillis() }
@@ -94,117 +145,263 @@ internal fun ExercisePlayer(
         mutableStateOf<ExerciseCompletion?>(exercise.completion)
     }
     val plan = exercise.plan
-    val hasUnsavedProgress = step > 1 && localCompletion == null
 
-    LaunchedEffect(hasUnsavedProgress) {
-        onProgressChanged(hasUnsavedProgress)
+    LaunchedEffect(step, localCompletion) {
+        onProgressChanged(step > 1 && localCompletion == null)
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        ExerciseOverview(exercise = exercise, step = step)
-        AnimatedContent(
-            targetState = step,
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
-            label = "ten_step_exercise"
-        ) { visibleStep ->
-            when (visibleStep) {
-                1 -> LearnWordStep(
-                    word = plan.words[0],
-                    languageTag = exercise.languageTag,
-                    onSpeakWord = onSpeakWord,
-                    onContinue = { step = 2 }
-                )
-                2 -> ReproduceWordStep(
-                    word = plan.words[0],
-                    languageTag = exercise.languageTag,
-                    onRecognizeAnswer = onRecognizeAnswer,
-                    onMistake = { mistakes++ },
-                    onContinue = { step = 3 }
-                )
-                3 -> GapDragStep(
-                    word = plan.words[0],
-                    onMistake = { mistakes++ },
-                    onContinue = { step = 4 }
-                )
-                4 -> RecallStep(
-                    prompt = plan.words[0].recallPrompt,
-                    answer = plan.words[0].recallAnswer,
-                    onMistake = { mistakes++ },
-                    onHint = { hintsUsed++ },
-                    onContinue = { step = 5 }
-                )
-                5 -> LearnWordStep(
-                    word = plan.words[1],
-                    languageTag = exercise.languageTag,
-                    onSpeakWord = onSpeakWord,
-                    onContinue = { step = 6 }
-                )
-                6 -> ReproduceWordStep(
-                    word = plan.words[1],
-                    languageTag = exercise.languageTag,
-                    onRecognizeAnswer = onRecognizeAnswer,
-                    onMistake = { mistakes++ },
-                    onContinue = { step = 7 }
-                )
-                7 -> GapDragStep(
-                    word = plan.words[1],
-                    onMistake = { mistakes++ },
-                    onContinue = { step = 8 }
-                )
-                8 -> RecallStep(
-                    prompt = plan.words[1].recallPrompt,
-                    answer = plan.words[1].recallAnswer,
-                    onMistake = { mistakes++ },
-                    onHint = { hintsUsed++ },
-                    onContinue = { step = 9 }
-                )
-                9 -> RecallStep(
-                    prompt = plan.hardPrompt,
-                    answer = plan.hardAnswer,
-                    onMistake = { mistakes++ },
-                    onHint = { hintsUsed++ },
-                    onContinue = { step = 10 }
-                )
-                else -> FinalMixedStep(
-                    exercise = exercise,
-                    onMistake = { mistakes++ },
-                    onHint = { hintsUsed++ },
-                    completion = localCompletion,
-                    onComplete = {
-                        val completion = ExerciseCompletion(
-                            completedAtMillis = System.currentTimeMillis(),
-                            mistakes = mistakes,
-                            elapsedMillis = System.currentTimeMillis() - startedAt,
-                            hintsUsed = hintsUsed
+    AnimatedContent(
+        targetState = step,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        label = "ten_step_exercise"
+    ) { visibleStep ->
+        val previous = if (visibleStep > 1) ({ step = visibleStep - 1 }) else null
+        val historyNext: () -> Unit = { step = (visibleStep + 1).coerceAtMost(10) }
+        val unlockAndAdvance: () -> Unit = {
+            val followingStep = (visibleStep + 1).coerceAtMost(10)
+            furthestUnlockedStep = maxOf(furthestUnlockedStep, followingStep)
+            step = followingStep
+        }
+        val canReturnForward = visibleStep < furthestUnlockedStep
+        when (visibleStep) {
+            1 -> LearnWordStep(
+                exercise = exercise,
+                step = 1,
+                word = plan.words[0],
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onContinue = unlockAndAdvance,
+                onSpeakWord = onSpeakWord
+            )
+            2 -> AnswerStep(
+                exercise = exercise,
+                step = 2,
+                prompt = stringResource(R.string.exercise_speak_or_type, plan.words[0].text),
+                expectedAnswer = plan.words[0].text,
+                answerTag = "word_answer_${plan.words[0].text}",
+                singleLine = true,
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onRecognizeAnswer = onRecognizeAnswer,
+                onMistake = { mistakes++ }
+            )
+            3 -> GapDragStep(
+                exercise = exercise,
+                step = 3,
+                word = plan.words[0],
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onMistake = { mistakes++ }
+            )
+            4 -> AnswerStep(
+                exercise = exercise,
+                step = 4,
+                prompt = plan.words[0].recallPrompt,
+                expectedAnswer = plan.words[0].recallAnswer,
+                answerTag = "recall_answer",
+                singleLine = false,
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onRecognizeAnswer = onRecognizeAnswer,
+                onMistake = { mistakes++ },
+                onHint = { hintsUsed++ }
+            )
+            5 -> LearnWordStep(
+                exercise = exercise,
+                step = 5,
+                word = plan.words[1],
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onContinue = unlockAndAdvance,
+                onSpeakWord = onSpeakWord
+            )
+            6 -> AnswerStep(
+                exercise = exercise,
+                step = 6,
+                prompt = stringResource(R.string.exercise_speak_or_type, plan.words[1].text),
+                expectedAnswer = plan.words[1].text,
+                answerTag = "word_answer_${plan.words[1].text}",
+                singleLine = true,
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onRecognizeAnswer = onRecognizeAnswer,
+                onMistake = { mistakes++ }
+            )
+            7 -> GapDragStep(
+                exercise = exercise,
+                step = 7,
+                word = plan.words[1],
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onMistake = { mistakes++ }
+            )
+            8 -> AnswerStep(
+                exercise = exercise,
+                step = 8,
+                prompt = plan.words[1].recallPrompt,
+                expectedAnswer = plan.words[1].recallAnswer,
+                answerTag = "recall_answer",
+                singleLine = false,
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onRecognizeAnswer = onRecognizeAnswer,
+                onMistake = { mistakes++ },
+                onHint = { hintsUsed++ }
+            )
+            9 -> AnswerStep(
+                exercise = exercise,
+                step = 9,
+                prompt = plan.hardPrompt,
+                expectedAnswer = plan.hardAnswer,
+                answerTag = "recall_answer",
+                singleLine = false,
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onCorrect = unlockAndAdvance,
+                onRecognizeAnswer = onRecognizeAnswer,
+                onMistake = { mistakes++ },
+                onHint = { hintsUsed++ }
+            )
+            else -> FinalMixedStep(
+                exercise = exercise,
+                onBack = onBack,
+                onPrevious = previous,
+                canReturnForward = canReturnForward,
+                onHistoryNext = historyNext,
+                onMistake = { mistakes++ },
+                onHint = { hintsUsed++ },
+                completion = localCompletion,
+                onComplete = {
+                    val completion = ExerciseCompletion(
+                        completedAtMillis = System.currentTimeMillis(),
+                        mistakes = mistakes,
+                        elapsedMillis = System.currentTimeMillis() - startedAt,
+                        hintsUsed = hintsUsed
+                    )
+                    localCompletion = completion
+                    onComplete(
+                        completion.mistakes,
+                        completion.elapsedMillis,
+                        completion.hintsUsed
+                    )
+                },
+                onRateDifficulty = { rating ->
+                    localCompletion = localCompletion?.copy(difficultyRating = rating)
+                    onRateDifficulty(rating)
+                }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ExerciseStepFrame(
+    exercise: Exercise,
+    step: Int,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    middleLabel: String,
+    middleEnabled: Boolean,
+    onMiddleClick: () -> Unit,
+    onMiddleLongClick: (() -> Unit)? = null,
+    nextEnabled: Boolean,
+    nextLabel: String = stringResource(R.string.exercise_next),
+    onNext: () -> Unit,
+    showProgress: Boolean = true,
+    showControls: Boolean = true,
+    content: @Composable BoxScope.() -> Unit
+) {
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(exercise.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = stringResource(R.string.exercise_back)
                         )
-                        localCompletion = completion
-                        onComplete(
-                            completion.mistakes,
-                            completion.elapsedMillis,
-                            completion.hintsUsed
-                        )
-                    },
-                    onRateDifficulty = { rating ->
-                        localCompletion = localCompletion?.copy(difficultyRating = rating)
-                        onRateDifficulty(rating)
                     }
+                }
+            )
+        },
+        bottomBar = {
+            if (showControls) {
+                ExerciseControls(
+                    onPrevious = onPrevious,
+                    middleLabel = middleLabel,
+                    middleEnabled = middleEnabled,
+                    onMiddleClick = onMiddleClick,
+                    onMiddleLongClick = onMiddleLongClick,
+                    nextEnabled = nextEnabled,
+                    nextLabel = nextLabel,
+                    onNext = onNext
                 )
             }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .padding(horizontal = 20.dp, vertical = 12.dp)
+        ) {
+            AnimatedVisibility(visible = showProgress && !imeVisible) {
+                ExerciseOverview(exercise = exercise, step = step)
+            }
+            Box(modifier = Modifier.fillMaxSize(), content = content)
         }
     }
 }
 
 @Composable
 private fun ExerciseOverview(exercise: Exercise, step: Int) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+        modifier = Modifier.padding(bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Text(
             text = exercise.instructions,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Étape $step sur 10",
+                text = stringResource(R.string.exercise_step_progress, step),
                 modifier = Modifier.weight(1f),
                 color = MaterialTheme.colorScheme.primary,
                 style = MaterialTheme.typography.labelLarge
@@ -220,241 +417,413 @@ private fun ExerciseOverview(exercise: Exercise, step: Int) {
 
 @Composable
 private fun LearnWordStep(
+    exercise: Exercise,
+    step: Int,
     word: LearnedWord,
-    languageTag: String,
-    onSpeakWord: suspend (String, String) -> Unit,
-    onContinue: () -> Unit
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onContinue: () -> Unit,
+    onSpeakWord: suspend (String, String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var audioError by remember { mutableStateOf<String?>(null) }
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Apprenez ce mot", style = MaterialTheme.typography.titleMedium)
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.primaryContainer
+    ExerciseStepFrame(
+        exercise = exercise,
+        step = step,
+        onBack = onBack,
+        onPrevious = onPrevious,
+        middleLabel = stringResource(R.string.exercise_continue),
+        middleEnabled = true,
+        onMiddleClick = onContinue,
+        nextEnabled = canReturnForward,
+        onNext = onHistoryNext
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(24.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Text(stringResource(R.string.exercise_learn_word), style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.primaryContainer
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = word.text,
-                        style = MaterialTheme.typography.headlineMedium,
-                        textAlign = TextAlign.Center
-                    )
-                    Text(
-                        text = word.pronunciation,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                }
-                FilledTonalIconButton(
-                    onClick = {
-                        scope.launch {
-                            audioError = runCatching {
-                                onSpeakWord(word.text, languageTag)
-                            }.exceptionOrNull()?.message
-                        }
-                    },
-                    modifier = Modifier.testTag("speak_${word.text}")
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.VolumeUp,
-                        contentDescription = "Écouter ${word.text}"
-                    )
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = word.text,
+                            style = MaterialTheme.typography.headlineMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = word.pronunciation,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                    FilledTonalIconButton(
+                        onClick = {
+                            scope.launch {
+                                audioError = runCatching {
+                                    onSpeakWord(word.text, exercise.languageTag)
+                                }.exceptionOrNull()?.message
+                            }
+                        },
+                        modifier = Modifier.testTag("speak_${word.text}")
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.VolumeUp,
+                            contentDescription = word.text
+                        )
+                    }
                 }
             }
+            Text(word.definition, style = MaterialTheme.typography.bodyLarge)
+            audioError?.let { ErrorText(it) }
         }
-        Text(word.definition, style = MaterialTheme.typography.bodyLarge)
-        audioError?.let { ErrorText(it) }
-        ContinueButton(onContinue)
     }
 }
 
 @Composable
-private fun ReproduceWordStep(
-    word: LearnedWord,
-    languageTag: String,
+private fun AnswerStep(
+    exercise: Exercise,
+    step: Int,
+    prompt: String,
+    expectedAnswer: String,
+    answerTag: String,
+    singleLine: Boolean,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onCorrect: () -> Unit,
     onRecognizeAnswer: suspend (String) -> String,
     onMistake: () -> Unit,
-    onContinue: () -> Unit
+    onHint: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
-    var answer by rememberSaveable(word.text) { mutableStateOf("") }
-    var correct by rememberSaveable(word.text) { mutableStateOf(false) }
-    var answeredByVoice by rememberSaveable(word.text) { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
+    var answer by rememberSaveable(prompt) { mutableStateOf("") }
+    var inputVisible by rememberSaveable(prompt) { mutableStateOf(false) }
+    var correct by rememberSaveable(prompt) { mutableStateOf(false) }
+    var answeredByVoice by rememberSaveable(prompt) { mutableStateOf(false) }
     var listening by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var hintVisible by rememberSaveable(prompt) { mutableStateOf(false) }
+    var wrongTranscript by remember { mutableStateOf("") }
+    var visibleTranscript by remember { mutableStateOf("") }
+
+    fun evaluate(value: String, voiced: Boolean) {
+        val wasCorrect = correct
+        answer = value
+        answeredByVoice = voiced
+        correct = answersEquivalent(value, expectedAnswer) ||
+            (!singleLine && normalizeAnswer(value).contains(normalizeAnswer(expectedAnswer)))
+        if (correct) {
+            error = null
+            wrongTranscript = ""
+            visibleTranscript = ""
+            keyboard?.hide()
+            if (!wasCorrect) {
+                scope.launch {
+                    delay(550)
+                    onCorrect()
+                }
+            }
+        } else {
+            onMistake()
+            error = resources.getString(R.string.exercise_incorrect)
+            wrongTranscript = if (voiced) value else ""
+        }
+    }
+
     fun recognize() {
         scope.launch {
+            inputVisible = false
+            keyboard?.hide()
             listening = true
             error = null
-            runCatching { onRecognizeAnswer(languageTag) }
-                .onSuccess {
-                    answer = it
-                    answeredByVoice = true
-                    correct = false
-                }
+            runCatching { onRecognizeAnswer(exercise.languageTag) }
+                .onSuccess { evaluate(it, voiced = true) }
                 .onFailure { error = it.message }
             listening = false
         }
     }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) recognize() else error = "Autorisation du microphone refusée."
-    }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Dites ou écrivez « ${word.text} »", style = MaterialTheme.typography.titleMedium)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = answer,
-                onValueChange = {
-                    answer = it.take(120)
-                    answeredByVoice = false
-                    correct = false
-                },
-                modifier = Modifier.weight(1f).testTag("word_answer_${word.text}"),
-                label = { Text("Votre réponse") },
-                singleLine = true
-            )
-            FilledTonalIconButton(
-                onClick = {
-                    if (ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO
-                        ) == PackageManager.PERMISSION_GRANTED
-                    ) recognize() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                },
-                modifier = Modifier.padding(start = 8.dp),
-                enabled = !listening
-            ) {
-                Icon(Icons.Rounded.Mic, contentDescription = "Prononcer dans la langue étudiée")
-            }
+        if (granted) recognize() else {
+            error = resources.getString(R.string.exercise_microphone_denied)
         }
-        if (listening) Text("Écoute en ${Locale.forLanguageTag(languageTag).displayLanguage}…")
-        error?.let { ErrorText(it) }
-        if (correct) {
-            SuccessSurface(
-                if (answeredByVoice) "Bonne prononciation!" else "Correct!"
-            )
-            ContinueButton(onContinue)
+    }
+
+    LaunchedEffect(inputVisible) {
+        if (inputVisible) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+        }
+    }
+    LaunchedEffect(wrongTranscript) {
+        visibleTranscript = ""
+        wrongTranscript.split(Regex("\\s+")).filter(String::isNotBlank).forEach { word ->
+            visibleTranscript = (visibleTranscript + " " + word).trim()
+            delay(90)
+        }
+    }
+
+    val startVoice = {
+        if (ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            recognize()
         } else {
-            FilledTonalButton(
-                onClick = {
-                    if (answersEquivalent(answer, word.text)) correct = true else onMistake()
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = answer.isNotBlank()
-            ) { Text("Vérifier") }
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    ExerciseStepFrame(
+        exercise = exercise,
+        step = step,
+        onBack = onBack,
+        onPrevious = onPrevious,
+        middleLabel = stringResource(R.string.exercise_answer),
+        middleEnabled = !listening,
+        onMiddleClick = {
+            inputVisible = true
+            error = null
+        },
+        onMiddleLongClick = startVoice,
+        nextEnabled = canReturnForward,
+        onNext = onHistoryNext
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(prompt, style = MaterialTheme.typography.headlineSmall)
+            if (inputVisible) {
+                OutlinedTextField(
+                    value = answer,
+                    onValueChange = {
+                        answer = it.take(600)
+                        answeredByVoice = false
+                        correct = false
+                        error = null
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .testTag(answerTag),
+                    label = { Text(stringResource(R.string.exercise_your_answer)) },
+                    singleLine = singleLine,
+                    minLines = if (singleLine) 1 else 2,
+                    keyboardOptions = KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                    keyboardActions = KeyboardActions(
+                        onDone = { evaluate(answer, voiced = false) }
+                    )
+                )
+            } else if (listening) {
+                Text(
+                    stringResource(
+                        R.string.exercise_listening,
+                        Locale.forLanguageTag(exercise.languageTag).displayLanguage
+                    ),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            if (visibleTranscript.isNotBlank() && !correct) {
+                AnimatedContent(
+                    targetState = visibleTranscript,
+                    transitionSpec = {
+                        (fadeIn() + slideInVertically { it / 2 }) togetherWith fadeOut()
+                    },
+                    label = "wrong_voice_transcript"
+                ) { transcript ->
+                    ErrorSurface(stringResource(R.string.exercise_heard, transcript))
+                }
+            }
+            error?.let { ErrorSurface(it) }
+            if (correct) {
+                SuccessSurface(
+                    stringResource(
+                        if (answeredByVoice) {
+                            R.string.exercise_pronunciation_correct
+                        } else {
+                            R.string.exercise_typed_correct
+                        }
+                    )
+                )
+            }
+            if (onHint != null) {
+                if (hintVisible) {
+                    Text(
+                        stringResource(
+                            R.string.exercise_hint_value,
+                            expectedAnswer.take((expectedAnswer.length / 2).coerceAtLeast(1))
+                        ),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                TextButton(onClick = {
+                    if (!hintVisible) onHint()
+                    hintVisible = true
+                }) {
+                    Icon(Icons.Rounded.Lightbulb, contentDescription = null)
+                    Text(stringResource(R.string.exercise_hint))
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun GapDragStep(
+    exercise: Exercise,
+    step: Int,
     word: LearnedWord,
-    onMistake: () -> Unit,
-    onContinue: () -> Unit
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onCorrect: () -> Unit,
+    onMistake: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var targetBounds by remember { mutableStateOf(Rect.Zero) }
     var selected by rememberSaveable(word.text) { mutableStateOf<String?>(null) }
+    var correct by rememberSaveable(word.text) { mutableStateOf(false) }
+    var attempted by rememberSaveable(word.text) { mutableStateOf(false) }
     val options = remember(word) {
         (word.distractors + word.text).shuffled(Random(word.text.hashCode()))
     }
     val pieces = word.gapSentence.split("___", limit = 2)
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Glissez le bon mot dans la phrase", style = MaterialTheme.typography.titleMedium)
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(pieces.getOrElse(0) { "" }, style = MaterialTheme.typography.bodyLarge)
-            DropTarget(
-                text = selected ?: "Déposez ici",
-                onBounds = { targetBounds = it }
+    ExerciseStepFrame(
+        exercise = exercise,
+        step = step,
+        onBack = onBack,
+        onPrevious = onPrevious,
+        middleLabel = stringResource(R.string.exercise_verify),
+        middleEnabled = selected != null,
+        onMiddleClick = {
+            attempted = true
+            correct = answersEquivalent(selected.orEmpty(), word.text)
+            if (!correct) {
+                onMistake()
+            } else {
+                scope.launch {
+                    delay(550)
+                    onCorrect()
+                }
+            }
+        },
+        nextEnabled = canReturnForward,
+        onNext = onHistoryNext
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+                stringResource(R.string.exercise_drag_instruction),
+                style = MaterialTheme.typography.titleMedium
             )
-            Text(pieces.getOrElse(1) { "" }, style = MaterialTheme.typography.bodyLarge)
-        }
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            options.forEach { option ->
-                DraggableWordChip(
-                    text = option,
-                    targets = mapOf(0 to targetBounds),
-                    onDropped = {
-                        if (answersEquivalent(option, word.text)) selected = option else onMistake()
-                    }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                InlineGapSentence(
+                    before = pieces.getOrElse(0) { "" },
+                    after = pieces.getOrElse(1) { "" },
+                    selected = selected,
+                    onBounds = { targetBounds = it }
                 )
             }
-        }
-        if (selected != null) {
-            SuccessSurface("Le mot complète correctement la phrase.")
-            ContinueButton(onContinue)
+            if (attempted) {
+                if (correct) {
+                    SuccessSurface(stringResource(R.string.exercise_drag_correct))
+                } else {
+                    ErrorSurface(stringResource(R.string.exercise_drag_incorrect))
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                options.forEach { option ->
+                    DraggableWordChip(
+                        text = option,
+                        targets = mapOf(0 to targetBounds),
+                        onDropped = {
+                            selected = option
+                            attempted = false
+                            correct = false
+                        }
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun RecallStep(
-    prompt: String,
-    answer: String,
-    onMistake: () -> Unit,
-    onHint: () -> Unit,
-    onContinue: () -> Unit
+private fun InlineGapSentence(
+    before: String,
+    after: String,
+    selected: String?,
+    onBounds: (Rect) -> Unit
 ) {
-    var learnerAnswer by rememberSaveable(prompt) { mutableStateOf("") }
-    var correct by rememberSaveable(prompt) { mutableStateOf(false) }
-    var hintVisible by rememberSaveable(prompt) { mutableStateOf(false) }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(prompt, style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = learnerAnswer,
-            onValueChange = { learnerAnswer = it.take(600); correct = false },
-            modifier = Modifier.fillMaxWidth().testTag("recall_answer"),
-            label = { Text("Votre réponse") },
-            minLines = 2
-        )
-        if (hintVisible) {
-            Text("Indice : ${answer.take((answer.length / 2).coerceAtLeast(1))}…")
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = {
-                if (!hintVisible) onHint()
-                hintVisible = true
-            }) {
-                Icon(Icons.Rounded.Lightbulb, contentDescription = null)
-                Text("Indice")
-            }
-        }
-        if (correct) {
-            SuccessSurface("Correct.")
-            ContinueButton(onContinue)
-        } else {
-            FilledTonalButton(
-                onClick = {
-                    if (answersEquivalent(learnerAnswer, answer) ||
-                        normalizeAnswer(learnerAnswer).contains(normalizeAnswer(answer))
-                    ) correct = true else onMistake()
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = learnerAnswer.isNotBlank()
-            ) { Text("Vérifier") }
-        }
+    val annotated = buildAnnotatedString {
+        append(before)
+        appendInlineContent("answer_gap", "_____")
+        append(after)
     }
+    Text(
+        text = annotated,
+        modifier = Modifier.fillMaxWidth(),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.headlineSmall,
+        inlineContent = mapOf(
+            "answer_gap" to InlineTextContent(
+                Placeholder(
+                    width = 116.sp,
+                    height = 42.sp,
+                    placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter
+                )
+            ) {
+                DropTarget(text = selected.orEmpty(), onBounds = onBounds)
+            }
+        )
+    )
 }
 
 @Composable
 private fun FinalMixedStep(
     exercise: Exercise,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
     onMistake: () -> Unit,
     onHint: () -> Unit,
     completion: ExerciseCompletion?,
@@ -462,7 +831,21 @@ private fun FinalMixedStep(
     onRateDifficulty: (Int) -> Unit
 ) {
     if (completion != null) {
-        CompletionSummary(completion, onRateDifficulty)
+        ExerciseStepFrame(
+            exercise = exercise,
+            step = 10,
+            onBack = onBack,
+            onPrevious = null,
+            middleLabel = "",
+            middleEnabled = false,
+            onMiddleClick = {},
+            nextEnabled = false,
+            onNext = {},
+            showProgress = false,
+            showControls = false
+        ) {
+            CompletionSummary(completion, onRateDifficulty)
+        }
         return
     }
     val plan = exercise.plan
@@ -478,73 +861,117 @@ private fun FinalMixedStep(
     var typed by rememberSaveable(exercise.id) { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var dropped by rememberSaveable(exercise.id) { mutableStateOf<Map<Int, String>>(emptyMap()) }
     var hintVisible by rememberSaveable(exercise.id) { mutableStateOf(false) }
+    var correct by rememberSaveable(exercise.id) { mutableStateOf(false) }
+    var attempted by rememberSaveable(exercise.id) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val sentenceParts = plan.finalSentence.split("___")
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Défi final · quatre mots manquants", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Écrivez vous-même les deux mots appris et glissez les autres mots.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(5.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+    val ready = learnedIndexes.all { typed[it].orEmpty().isNotBlank() } &&
+        fillerIndexes.all { dropped[it].orEmpty().isNotBlank() }
+
+    ExerciseStepFrame(
+        exercise = exercise,
+        step = 10,
+        onBack = onBack,
+        onPrevious = onPrevious,
+        middleLabel = stringResource(R.string.exercise_verify),
+        middleEnabled = ready,
+        onMiddleClick = {
+            attempted = true
+            correct = learnedIndexes.all { index ->
+                answersEquivalent(typed[index].orEmpty(), plan.finalAnswers[index])
+            } && fillerIndexes.all { index ->
+                answersEquivalent(dropped[index].orEmpty(), plan.finalAnswers[index])
+            }
+            if (!correct) onMistake()
+            else scope.launch {
+                delay(550)
+                onComplete()
+            }
+        },
+        nextEnabled = canReturnForward,
+        nextLabel = stringResource(R.string.exercise_next),
+        onNext = onHistoryNext
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            plan.finalAnswers.indices.forEach { index ->
-                Text(sentenceParts.getOrElse(index) { "" })
-                if (index in learnedIndexes) {
-                    OutlinedTextField(
-                        value = typed[index].orEmpty(),
-                        onValueChange = { typed = typed + (index to it.take(80)) },
-                        modifier = Modifier
-                            .size(width = 130.dp, height = 64.dp)
-                            .testTag("final_typed_$index"),
-                        label = { Text("Écrire") },
-                        singleLine = true
-                    )
-                } else {
-                    DropTarget(
-                        text = dropped[index] ?: "Déposer",
-                        onBounds = { targets[index] = it }
+            Text(stringResource(R.string.exercise_final_title), style = MaterialTheme.typography.titleMedium)
+            Text(
+                stringResource(R.string.exercise_final_instruction),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                plan.finalAnswers.indices.forEach { index ->
+                    Text(sentenceParts.getOrElse(index) { "" })
+                    if (index in learnedIndexes) {
+                        OutlinedTextField(
+                            value = typed[index].orEmpty(),
+                            onValueChange = {
+                                typed = typed + (index to it.take(80))
+                                correct = false
+                                attempted = false
+                            },
+                            modifier = Modifier
+                                .size(width = 130.dp, height = 64.dp)
+                                .testTag("final_typed_$index"),
+                            label = { Text(stringResource(R.string.exercise_write)) },
+                            singleLine = true
+                        )
+                    } else {
+                        DropTarget(
+                            text = dropped[index].orEmpty(),
+                            onBounds = { targets[index] = it },
+                            modifier = Modifier.size(width = 112.dp, height = 48.dp)
+                        )
+                    }
+                }
+                Text(sentenceParts.getOrElse(4) { "" })
+            }
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+            ) {
+                fillerIndexes.map { plan.finalAnswers[it] }.distinct().forEach { filler ->
+                    DraggableWordChip(
+                        text = filler,
+                        targets = targets.filterKeys { index ->
+                            plan.finalAnswers[index].equals(filler, ignoreCase = true)
+                        },
+                        onDroppedAt = { index ->
+                            dropped = dropped + (index to filler)
+                            correct = false
+                            attempted = false
+                        }
                     )
                 }
             }
-            Text(sentenceParts.getOrElse(4) { "" })
-        }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            fillerIndexes.map { plan.finalAnswers[it] }.distinct().forEach { filler ->
-                DraggableWordChip(
-                    text = filler,
-                    targets = targets.filterKeys { index ->
-                        plan.finalAnswers[index].equals(filler, ignoreCase = true)
-                    },
-                    onDroppedAt = { index -> dropped = dropped + (index to filler) }
+            if (attempted && !correct) {
+                ErrorSurface(stringResource(R.string.exercise_final_incorrect))
+            }
+            if (hintVisible) {
+                Text(
+                    stringResource(
+                        R.string.exercise_final_hint,
+                        plan.words.joinToString { it.text }
+                    ),
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
+            TextButton(onClick = {
+                if (!hintVisible) onHint()
+                hintVisible = true
+            }) {
+                Icon(Icons.Rounded.Lightbulb, contentDescription = null)
+                Text(stringResource(R.string.exercise_hint))
+            }
         }
-        if (hintVisible) {
-            Text(
-                "Indice : mots appris — ${plan.words.joinToString { it.text }}",
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-        TextButton(onClick = {
-            if (!hintVisible) onHint()
-            hintVisible = true
-        }) {
-            Icon(Icons.Rounded.Lightbulb, contentDescription = null)
-            Text("Indice")
-        }
-        FilledTonalButton(
-            onClick = {
-                val learnedWordsAreCorrect = learnedIndexes.all { index ->
-                    answersEquivalent(typed[index].orEmpty(), plan.finalAnswers[index])
-                }
-                if (learnedWordsAreCorrect) onComplete() else onMistake()
-            },
-            modifier = Modifier.fillMaxWidth(),
-            enabled = learnedIndexes.all { typed[it].orEmpty().isNotBlank() } &&
-                fillerIndexes.all { dropped[it].orEmpty().isNotBlank() }
-        ) { Text("Terminer l'exercice") }
     }
 }
 
@@ -558,14 +985,17 @@ private fun CompletionSummary(
         delay(350)
         bringIntoViewRequester.bringIntoView()
     }
-    Box {
+    Box(modifier = Modifier.fillMaxSize()) {
         Confetti()
         Column(
-            modifier = Modifier.bringIntoViewRequester(bringIntoViewRequester),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .bringIntoViewRequester(bringIntoViewRequester),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text("Bravo !", style = MaterialTheme.typography.headlineMedium)
-            Text("Exercice terminé", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.exercise_congratulations), style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(R.string.exercise_completed), style = MaterialTheme.typography.titleLarge)
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.extraLarge,
@@ -575,14 +1005,21 @@ private fun CompletionSummary(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("Erreurs : ${completion.mistakes}")
-                    Text("Temps : ${formatDuration(completion.elapsedMillis)}")
-                    if (completion.hintsUsed > 0) Text("Indices utilisés : ${completion.hintsUsed}")
+                    Text(stringResource(R.string.exercise_mistakes, completion.mistakes))
+                    Text(stringResource(R.string.exercise_time, formatDuration(completion.elapsedMillis)))
+                    if (completion.hintsUsed > 0) {
+                        Text(stringResource(R.string.exercise_hints_used, completion.hintsUsed))
+                    }
                 }
             }
-            Text("Difficulté de cet exercice", style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.exercise_rate_difficulty), style = MaterialTheme.typography.titleMedium)
             Row {
                 (1..5).forEach { rating ->
+                    val description = stringResource(
+                        if (rating == 1) R.string.exercise_star_description
+                        else R.string.exercise_stars_description,
+                        rating
+                    )
                     IconButton(onClick = { onRateDifficulty(rating) }) {
                         Icon(
                             imageVector = if (rating <= (completion.difficultyRating ?: 0)) {
@@ -590,7 +1027,7 @@ private fun CompletionSummary(
                             } else {
                                 Icons.Rounded.StarBorder
                             },
-                            contentDescription = "$rating étoile${if (rating > 1) "s" else ""}",
+                            contentDescription = description,
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -621,17 +1058,46 @@ private fun Confetti() {
 }
 
 @Composable
-private fun DropTarget(text: String, onBounds: (Rect) -> Unit) {
-    Surface(
-        modifier = Modifier
+private fun DropTarget(
+    text: String,
+    onBounds: (Rect) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val outlineColor = MaterialTheme.colorScheme.outline
+    Box(
+        modifier = modifier
+            .defaultMinSize(minWidth = 96.dp, minHeight = 42.dp)
             .onGloballyPositioned { onBounds(it.boundsInRoot()) }
-            .testTag("drop_target_$text"),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.secondaryContainer
+            .testTag("drop_target")
+            .then(
+                Modifier.drawDashedOutline(outlineColor)
+            ),
+        contentAlignment = Alignment.Center
     ) {
-        Text(text, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp))
+        if (text.isNotBlank()) {
+            Text(
+                text = text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
     }
 }
+
+private fun Modifier.drawDashedOutline(color: Color): Modifier = this.then(
+    Modifier.drawBehind {
+        val strokeWidth = 2.dp.toPx()
+        drawRoundRect(
+            color = color,
+            cornerRadius = CornerRadius(12.dp.toPx()),
+            style = Stroke(
+                width = strokeWidth,
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 7.dp.toPx()))
+            )
+        )
+    }
+)
 
 @Composable
 private fun DraggableWordChip(
@@ -669,10 +1135,119 @@ private fun DraggableWordChip(
     )
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ContinueButton(onClick: () -> Unit) {
-    FilledTonalButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Text("Continuer")
+private fun ExerciseControls(
+    onPrevious: (() -> Unit)?,
+    middleLabel: String,
+    middleEnabled: Boolean,
+    onMiddleClick: () -> Unit,
+    onMiddleLongClick: (() -> Unit)?,
+    nextEnabled: Boolean,
+    nextLabel: String,
+    onNext: () -> Unit
+) {
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(
+                ButtonGroupDefaults.ConnectedSpaceBetween
+            )
+        ) {
+            FilledTonalButton(
+                onClick = { onPrevious?.invoke() },
+                shapes = ButtonDefaults.shapes(
+                    shape = ButtonGroupDefaults.connectedLeadingButtonShape,
+                    pressedShape = ButtonGroupDefaults.connectedLeadingButtonPressShape
+                ),
+                modifier = Modifier.weight(1f),
+                enabled = onPrevious != null,
+                contentPadding = PaddingValues(horizontal = 8.dp)
+            ) {
+                Text(stringResource(R.string.exercise_previous), maxLines = 1)
+            }
+            HoldAnswerButton(
+                label = middleLabel,
+                enabled = middleEnabled,
+                onClick = onMiddleClick,
+                onLongClick = onMiddleLongClick,
+                modifier = Modifier.weight(1.15f)
+            )
+            FilledTonalButton(
+                onClick = onNext,
+                shapes = ButtonDefaults.shapes(
+                    shape = ButtonGroupDefaults.connectedTrailingButtonShape,
+                    pressedShape = ButtonGroupDefaults.connectedTrailingButtonPressShape
+                ),
+                modifier = Modifier.weight(1f),
+                enabled = nextEnabled,
+                contentPadding = PaddingValues(horizontal = 8.dp)
+            ) {
+                Text(nextLabel, maxLines = 1)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun HoldAnswerButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val holdLabel = stringResource(R.string.exercise_hold_to_speak)
+    var longPressTriggered by remember { mutableStateOf(false) }
+    LaunchedEffect(interactionSource, enabled, onLongClick) {
+        var holdJob: Job? = null
+        interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is PressInteraction.Press -> {
+                    holdJob?.cancel()
+                    holdJob = if (enabled && onLongClick != null) {
+                        launch {
+                            delay(500)
+                            longPressTriggered = true
+                            onLongClick()
+                        }
+                    } else null
+                }
+                is PressInteraction.Release,
+                is PressInteraction.Cancel -> {
+                    holdJob?.cancel()
+                    holdJob = null
+                }
+            }
+        }
+    }
+    FilledTonalButton(
+        onClick = {
+            if (longPressTriggered) longPressTriggered = false else onClick()
+        },
+        shapes = ButtonDefaults.shapes(
+            shape = androidx.compose.material3.ShapeDefaults.Small,
+            pressedShape = ButtonGroupDefaults.connectedMiddleButtonPressShape
+        ),
+        modifier = modifier.semantics {
+            if (onLongClick != null) {
+                onLongClick(label = holdLabel) {
+                    onLongClick()
+                    true
+                }
+            }
+        },
+        interactionSource = interactionSource,
+        enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 8.dp)
+    ) {
+        Text(label, maxLines = 1)
     }
 }
 
@@ -684,6 +1259,22 @@ private fun SuccessSurface(message: String) {
         color = correctContainerColor()
     ) {
         Text(message, modifier = Modifier.padding(16.dp), fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun ErrorSurface(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.errorContainer
+    ) {
+        Text(
+            message,
+            modifier = Modifier.padding(16.dp),
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 
@@ -710,9 +1301,14 @@ private fun normalizeAnswer(value: String): String = Normalizer
     .trim()
     .trimEnd('.', '!', '?', '。', '！', '？')
 
+@Composable
 private fun formatDuration(millis: Long): String {
     val totalSeconds = millis / 1_000
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
-    return if (minutes > 0) "${minutes} min ${seconds} s" else "${seconds} s"
+    return if (minutes > 0) {
+        stringResource(R.string.exercise_minutes_seconds, minutes, seconds)
+    } else {
+        stringResource(R.string.exercise_seconds, seconds)
+    }
 }

@@ -47,6 +47,7 @@ class ModelDownloadWorker(
         }.getOrDefault(AccelerationKind.AUTO)
         val speculativeDecoding =
             inputData.getBoolean(KEY_SPECULATIVE_DECODING, false)
+        val addToPromptCatalog = inputData.getBoolean(KEY_ADD_TO_PROMPT_CATALOG, true)
 
         if (
             !REPOSITORY_PATTERN.matches(repository) ||
@@ -69,27 +70,32 @@ class ModelDownloadWorker(
             val artifactName = requestedFile
                 ?: reusableModel?.fileName
                 ?: resolveLiteRtModelFile(repository)
-            require(artifactName.endsWith(".litertlm", ignoreCase = true)) {
-                "Ce dépôt ne contient aucun modèle .litertlm compatible."
+            require(
+                artifactName.endsWith(".litertlm", ignoreCase = true) ||
+                    (!addToPromptCatalog && artifactName.endsWith(".gguf", ignoreCase = true))
+            ) {
+                "Ce dépôt ne contient aucun artefact compatible."
             }
             val sharedModel = reusableModel ?: download(
                 repository = repository,
                 artifactName = artifactName,
                 displayName = displayName
             )
-            val record = PromptModelRecord(
-                id = modelId,
-                displayName = displayName,
-                filePath = "",
-                contentUri = sharedModel.uri.toString(),
-                source = "Hugging Face · ${SharedModelStore.USER_VISIBLE_DIRECTORY}",
-                repository = repository,
-                artifactFileName = artifactName,
-                sizeBytes = sharedModel.sizeBytes,
-                accelerationHint = acceleration,
-                speculativeDecoding = speculativeDecoding
-            )
-            catalog.add(record)
+            if (addToPromptCatalog) {
+                val record = PromptModelRecord(
+                    id = modelId,
+                    displayName = displayName,
+                    filePath = "",
+                    contentUri = sharedModel.uri.toString(),
+                    source = "Hugging Face · ${SharedModelStore.USER_VISIBLE_DIRECTORY}",
+                    repository = repository,
+                    artifactFileName = artifactName,
+                    sizeBytes = sharedModel.sizeBytes,
+                    accelerationHint = acceleration,
+                    speculativeDecoding = speculativeDecoding
+                )
+                catalog.add(record)
+            }
             showFinishedNotification(
                 displayName = displayName,
                 message =
@@ -461,6 +467,7 @@ class ModelDownloadWorker(
         const val KEY_REQUESTED_FILE = "requested_file"
         const val KEY_ACCELERATION = "acceleration"
         const val KEY_SPECULATIVE_DECODING = "speculative_decoding"
+        const val KEY_ADD_TO_PROMPT_CATALOG = "add_to_prompt_catalog"
         const val KEY_PROGRESS_PERCENT = "progress_percent"
         const val KEY_DOWNLOADED_BYTES = "downloaded_bytes"
         const val KEY_TOTAL_BYTES = "total_bytes"

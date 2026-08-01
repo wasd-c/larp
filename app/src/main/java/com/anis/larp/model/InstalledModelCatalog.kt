@@ -149,15 +149,25 @@ class InstalledModelCatalog(
             Triple(
                 ModelPreferences.STT_ML_KIT_ADVANCED,
                 SpeechRecognizerOptions.Mode.MODE_ADVANCED,
-                "Reconnaissance avancée"
+                "Gemini · avancée"
             ),
             Triple(
                 ModelPreferences.STT_ML_KIT_BASIC,
                 SpeechRecognizerOptions.Mode.MODE_BASIC,
-                "Reconnaissance basique"
+                "Gemini · basique"
             )
         )
         return buildList {
+            if (QwenAsrModel.isAvailable(applicationContext)) {
+                add(
+                    InstalledModelOption(
+                        id = ModelPreferences.STT_QWEN_3_ASR,
+                        label = "Qwen",
+                        description =
+                            "Qwen3-ASR 0.6B · ${targetLocale.toLanguageTag()} · hors ligne"
+                    )
+                )
+            }
             candidates.forEach { (id, mode, label) ->
                 runCatching {
                     val recognizer = SpeechRecognition.getClient(

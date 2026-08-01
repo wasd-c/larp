@@ -35,6 +35,7 @@ import com.anis.larp.model.ModelDownloadManager
 import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.DeviceAccelerationProfile
+import com.anis.larp.model.QwenAsrModel
 import com.anis.larp.ui.onboarding.OnboardingScreen
 import com.anis.larp.ui.onboarding.PromptSetup
 import com.anis.larp.ui.settings.ModelSettingsScreen
@@ -74,6 +75,13 @@ fun LarpApp(
         ) {
             downloadManager.enqueueGemma4()
         }
+        if (
+            onboardingComplete &&
+            preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR &&
+            !QwenAsrModel.isAvailable(context.applicationContext)
+        ) {
+            downloadManager.enqueueQwenAsr()
+        }
     }
 
     if (!onboardingComplete) {
@@ -108,10 +116,17 @@ fun LarpApp(
                         }
                     }
                 }
+                if (
+                    selection.sttModelId == ModelPreferences.STT_QWEN_3_ASR &&
+                    !QwenAsrModel.isAvailable(context.applicationContext)
+                ) {
+                    downloadManager.enqueueQwenAsr()
+                }
                 preferences.completeOnboarding(
                     nativeLanguageTag = selection.nativeLanguageTag,
                     targetLanguage = selection.targetLanguage,
-                    promptModelId = selection.promptSetup.modelId
+                    promptModelId = selection.promptSetup.modelId,
+                    sttModelId = selection.sttModelId
                 )
                 onboardingComplete = true
             }
@@ -137,6 +152,7 @@ fun LarpApp(
     var requestedExerciseId by remember { mutableStateOf<String?>(null) }
     var requestedLessonId by remember { mutableStateOf<String?>(null) }
     var exerciseHasUnsavedProgress by remember { mutableStateOf(false) }
+    var exercisePlayerOpen by remember { mutableStateOf(false) }
     var pendingDestination by remember { mutableStateOf<AppDestination?>(null) }
     fun hasNotificationPermission(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -267,7 +283,8 @@ fun LarpApp(
                 onImportYoutube = { videoUrl ->
                     conversationController.importExerciseFromYoutube(videoUrl)
                 },
-                onExerciseProgressChanged = { exerciseHasUnsavedProgress = it }
+                onExerciseProgressChanged = { exerciseHasUnsavedProgress = it },
+                onExerciseOpenChanged = { exercisePlayerOpen = it }
             )
             AppDestination.LESSONS -> LessonsScreen(
                 requestedOpenId = requestedLessonId,
@@ -297,7 +314,7 @@ fun LarpApp(
             )
         }
 
-        ExpressiveNavigationBar(
+        if (!exercisePlayerOpen) ExpressiveNavigationBar(
             selectedDestination = selectedDestination,
             onDestinationSelected = { destination ->
                 if (

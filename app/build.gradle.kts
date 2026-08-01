@@ -3,8 +3,70 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val llamaCppRelease = "b9637"
+val llamaCppArchiveName = "llama-$llamaCppRelease-bin-android-arm64.tar.gz"
+val llamaCppArchive = layout.buildDirectory.file("downloads/$llamaCppArchiveName")
+val rawQwenRuntimeDirectory = layout.buildDirectory.dir("generated/qwen-runtime-raw/jniLibs")
+val qwenRuntimeDirectory = layout.buildDirectory.dir("generated/qwen-runtime/jniLibs")
+val ndkHostDirectory = when {
+    System.getProperty("os.name").startsWith("Mac", ignoreCase = true) -> "darwin-x86_64"
+    System.getProperty("os.name").startsWith("Windows", ignoreCase = true) -> "windows-x86_64"
+    else -> "linux-x86_64"
+}
+val stripExecutableName = if (ndkHostDirectory.startsWith("windows")) {
+    "llvm-strip.exe"
+} else {
+    "llvm-strip"
+}
+
+val downloadQwenRuntime by tasks.registering(PinnedDownloadTask::class) {
+    sourceUrl.set(
+        "https://github.com/ggml-org/llama.cpp/releases/download/" +
+            "$llamaCppRelease/$llamaCppArchiveName"
+    )
+    expectedSha256.set("66068af2400dbaaadb4dc3e4042d120c6633f115ecd2fe1a8979fb55e0648e4d")
+    destination.set(llamaCppArchive)
+}
+
+val prepareQwenRuntime by tasks.registering(Copy::class) {
+    dependsOn(downloadQwenRuntime)
+    from({ tarTree(resources.gzip(llamaCppArchive.get().asFile)) }) {
+        include(
+            "llama-$llamaCppRelease/llama-server",
+            "llama-$llamaCppRelease/libllama-server-impl.so",
+            "llama-$llamaCppRelease/libllama-common.so",
+            "llama-$llamaCppRelease/libmtmd.so",
+            "llama-$llamaCppRelease/libllama.so",
+            "llama-$llamaCppRelease/libggml.so",
+            "llama-$llamaCppRelease/libggml-base.so",
+            "llama-$llamaCppRelease/libggml-cpu-android_*.so"
+        )
+        eachFile {
+            path = "arm64-v8a/" + if (name == "llama-server") {
+                "libllama-qwen-server.so"
+            } else {
+                name
+            }
+        }
+        includeEmptyDirs = false
+    }
+    into(rawQwenRuntimeDirectory)
+}
+
+val stripQwenRuntime by tasks.registering(StripNativeRuntimeTask::class) {
+    dependsOn(prepareQwenRuntime)
+    sourceDirectory.set(rawQwenRuntimeDirectory)
+    stripExecutable.set(
+        androidComponents.sdkComponents.ndkDirectory.map { ndk ->
+            ndk.file("toolchains/llvm/prebuilt/$ndkHostDirectory/bin/$stripExecutableName")
+        }
+    )
+    destinationDirectory.set(qwenRuntimeDirectory)
+}
+
 android {
     namespace = "com.anis.larp"
+    ndkVersion = "26.1.10909125"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -35,6 +97,14 @@ android {
     buildFeatures {
         compose = true
     }
+    sourceSets.getByName("main").jniLibs.srcDir(qwenRuntimeDirectory.get().asFile)
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(stripQwenRuntime)
 }
 
 dependencies {

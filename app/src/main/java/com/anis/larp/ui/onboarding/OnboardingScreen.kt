@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -52,13 +53,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.anis.larp.model.DeviceAccelerationProfile
 import com.anis.larp.model.LearningLanguage
 import com.anis.larp.model.NativeLanguageChoice
+import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.PromptModelRecord
+import com.anis.larp.model.QwenAsrModel
 import com.anis.larp.model.commonNativeLanguages
 import com.anis.larp.model.displayNameIn
 import com.anis.larp.model.parseHuggingFaceModelReference
@@ -69,6 +73,7 @@ import kotlinx.coroutines.launch
 data class OnboardingSelection(
     val nativeLanguageTag: String,
     val targetLanguage: LearningLanguage,
+    val sttModelId: String,
     val promptSetup: PromptSetup
 )
 
@@ -99,7 +104,13 @@ sealed interface PromptSetup {
 private enum class OnboardingStep {
     NATIVE_LANGUAGE,
     TARGET_LANGUAGE,
+    SPEECH_RECOGNITION,
     PROMPT_MODEL
+}
+
+private enum class AsrChoice {
+    GEMINI,
+    QWEN
 }
 
 private enum class PromptChoice {
@@ -118,6 +129,7 @@ fun OnboardingScreen(
     onComplete: (OnboardingSelection) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val deviceLocale = remember { Locale.getDefault() }
     val accelerationProfile = remember { DeviceAccelerationProfile.detect() }
     val sharedGemmaAvailable = remember(promptCatalog) {
@@ -135,6 +147,7 @@ fun OnboardingScreen(
     }
     var correctingNativeLanguage by remember { mutableStateOf(false) }
     var targetLanguage by remember { mutableStateOf<LearningLanguage?>(null) }
+    var asrChoice by remember { mutableStateOf<AsrChoice?>(null) }
     var promptChoice by remember { mutableStateOf<PromptChoice?>(null) }
     var advancedExpanded by remember { mutableStateOf(false) }
     var advancedSource by remember {
@@ -145,6 +158,9 @@ fun OnboardingScreen(
     var importingFile by remember { mutableStateOf(false) }
     var importError by remember { mutableStateOf<String?>(null) }
     var pendingCompletion by remember { mutableStateOf<OnboardingSelection?>(null) }
+    val qwenAvailable = remember(context.applicationContext) {
+        QwenAsrModel.isAvailable(context.applicationContext)
+    }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -174,8 +190,10 @@ fun OnboardingScreen(
     fun finish(selection: OnboardingSelection) {
         val needsDownload = selection.promptSetup is PromptSetup.HuggingFace &&
             promptCatalog.find(selection.promptSetup.modelId) == null
+        val needsQwenDownload = selection.sttModelId == ModelPreferences.STT_QWEN_3_ASR &&
+            !qwenAvailable
         if (
-            needsDownload &&
+            (needsDownload || needsQwenDownload) &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         ) {
             pendingCompletion = selection
@@ -211,8 +229,11 @@ fun OnboardingScreen(
                     OnboardingStep.TARGET_LANGUAGE -> {
                         { step = OnboardingStep.NATIVE_LANGUAGE }
                     }
-                    OnboardingStep.PROMPT_MODEL -> {
+                    OnboardingStep.SPEECH_RECOGNITION -> {
                         { step = OnboardingStep.TARGET_LANGUAGE }
+                    }
+                    OnboardingStep.PROMPT_MODEL -> {
+                        { step = OnboardingStep.SPEECH_RECOGNITION }
                     }
                 }
             )
@@ -231,6 +252,13 @@ fun OnboardingScreen(
                 OnboardingStep.TARGET_LANGUAGE -> TargetLanguageStep(
                     selected = targetLanguage,
                     onSelected = { targetLanguage = it },
+                    onContinue = { step = OnboardingStep.SPEECH_RECOGNITION }
+                )
+
+                OnboardingStep.SPEECH_RECOGNITION -> SpeechRecognitionStep(
+                    selected = asrChoice,
+                    qwenAvailable = qwenAvailable,
+                    onSelected = { asrChoice = it },
                     onContinue = { step = OnboardingStep.PROMPT_MODEL }
                 )
 
@@ -293,6 +321,11 @@ fun OnboardingScreen(
                             OnboardingSelection(
                                 nativeLanguageTag = nativeLanguageTag,
                                 targetLanguage = target,
+                                sttModelId = when (asrChoice) {
+                                    AsrChoice.QWEN -> ModelPreferences.STT_QWEN_3_ASR
+                                    AsrChoice.GEMINI -> ModelPreferences.STT_ML_KIT_ADVANCED
+                                    null -> return@PromptModelStep
+                                },
                                 promptSetup = promptSetup
                             )
                         )
@@ -300,6 +333,66 @@ fun OnboardingScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun SpeechRecognitionStep(
+    selected: AsrChoice?,
+    qwenAvailable: Boolean,
+    onSelected: (AsrChoice) -> Unit,
+    onContinue: () -> Unit
+) {
+    StepTitle(
+        icon = Icons.Rounded.RecordVoiceOver,
+        title = "Qui doit reconnaître votre voix ?",
+        subtitle = "La reconnaissance utilise votre langue maternelle en mode Libre et la langue apprise dans les exercices."
+    )
+    Spacer(Modifier.height(22.dp))
+    SelectionCard(
+        selected = selected == AsrChoice.GEMINI,
+        onClick = { onSelected(AsrChoice.GEMINI) },
+        title = "Gemini",
+        description = "Reconnaissance avancée Android AI Core · sur l'appareil"
+    )
+    SelectionCard(
+        selected = selected == AsrChoice.QWEN,
+        onClick = { onSelected(AsrChoice.QWEN) },
+        title = "Qwen",
+        description = if (qwenAvailable) {
+            "Qwen3-ASR 0.6B · déjà présent dans Download/Models · hors ligne"
+        } else {
+            "Qwen3-ASR 0.6B · environ 1 Go · Download/Models · hors ligne"
+        }
+    )
+    if (selected == AsrChoice.QWEN) {
+        DownloadNotificationCard(alreadyAvailable = qwenAvailable)
+    }
+    Spacer(Modifier.height(20.dp))
+    Button(
+        onClick = onContinue,
+        enabled = selected != null,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp),
+        shape = MaterialTheme.shapes.extraLarge
+    ) {
+        Icon(
+            if (selected == AsrChoice.QWEN && !qwenAvailable) {
+                Icons.Rounded.CloudDownload
+            } else {
+                Icons.Rounded.RecordVoiceOver
+            },
+            contentDescription = null
+        )
+        Text(
+            text = if (selected == AsrChoice.QWEN && !qwenAvailable) {
+                "Continuer vers le professeur"
+            } else {
+                "Continuer"
+            },
+            modifier = Modifier.padding(start = 8.dp)
+        )
     }
 }
 

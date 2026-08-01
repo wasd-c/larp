@@ -81,6 +81,57 @@ class ModelDownloadManager(context: Context) {
         )
     }
 
+    fun enqueueQwenAsr(): DownloadRequest {
+        val requests = QwenAsrModel.ARTIFACTS.mapIndexed { index, artifact ->
+            val reusableModel = sharedStore.findCompleted(
+                repository = QwenAsrModel.REPOSITORY,
+                artifactName = artifact
+            )
+            OneTimeWorkRequestBuilder<ModelDownloadWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(
+                            if (reusableModel == null) {
+                                NetworkType.CONNECTED
+                            } else {
+                                NetworkType.NOT_REQUIRED
+                            }
+                        )
+                        .setRequiresStorageNotLow(true)
+                        .build()
+                )
+                .setInputData(
+                    Data.Builder()
+                        .putString(ModelDownloadWorker.KEY_REPOSITORY, QwenAsrModel.REPOSITORY)
+                        .putString(ModelDownloadWorker.KEY_MODEL_ID, ModelPreferences.STT_QWEN_3_ASR)
+                        .putString(
+                            ModelDownloadWorker.KEY_DISPLAY_NAME,
+                            "Qwen ASR (${index + 1}/${QwenAsrModel.ARTIFACTS.size})"
+                        )
+                        .putString(ModelDownloadWorker.KEY_REQUESTED_FILE, artifact)
+                        .putBoolean(ModelDownloadWorker.KEY_ADD_TO_PROMPT_CATALOG, false)
+                        .build()
+                )
+                .addTag(DOWNLOAD_TAG)
+                .addTag(QWEN_ASR_DOWNLOAD_TAG)
+                .addTag(ModelPreferences.STT_QWEN_3_ASR)
+                .build()
+        }
+        var continuation = workManager.beginUniqueWork(
+            uniqueWorkName(ModelPreferences.STT_QWEN_3_ASR),
+            ExistingWorkPolicy.KEEP,
+            requests.first()
+        )
+        requests.drop(1).forEach { request ->
+            continuation = continuation.then(request)
+        }
+        continuation.enqueue()
+        return DownloadRequest(
+            modelId = ModelPreferences.STT_QWEN_3_ASR,
+            workId = requests.last().id
+        )
+    }
+
     data class DownloadRequest(
         val modelId: String,
         val workId: UUID
@@ -88,6 +139,7 @@ class ModelDownloadManager(context: Context) {
 
     companion object {
         const val DOWNLOAD_TAG = "larp-prompt-model-download"
+        const val QWEN_ASR_DOWNLOAD_TAG = "larp-qwen-asr-download"
 
         private fun uniqueWorkName(modelId: String): String =
             "larp-model-${modelId.hashCode().toUInt()}"

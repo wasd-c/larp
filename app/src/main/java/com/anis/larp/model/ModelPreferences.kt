@@ -50,12 +50,14 @@ class ModelPreferences(context: Context) {
     fun completeOnboarding(
         nativeLanguageTag: String,
         targetLanguage: LearningLanguage,
-        promptModelId: String
+        promptModelId: String,
+        sttModelId: String
     ) {
         preferences.edit()
             .putString(KEY_NATIVE_LANGUAGE, nativeLanguageTag)
             .putString(KEY_TARGET_LANGUAGE, targetLanguage.languageTag)
             .putString(KEY_PROMPT_MODEL, promptModelId)
+            .putString(KEY_STT_MODEL, sttModelId)
             .putBoolean(KEY_ONBOARDING_COMPLETE, true)
             .apply()
         onboardingComplete = true
@@ -65,6 +67,7 @@ class ModelPreferences(context: Context) {
         const val PROMPT_GEMINI_NANO = "prompt:gemini-nano"
         const val STT_ML_KIT_ADVANCED = "stt:ml-kit-advanced"
         const val STT_ML_KIT_BASIC = "stt:ml-kit-basic"
+        const val STT_QWEN_3_ASR = "stt:qwen3-asr-0.6b"
 
         private const val PREFERENCES_NAME = "larp_models"
         private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"

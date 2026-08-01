@@ -12,11 +12,15 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performImeAction
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -455,10 +459,18 @@ class FreeModeScreenTest {
         composeRule.onNodeWithText("Apprenez ce mot").assertIsDisplayed()
         composeRule.onNodeWithText("ɡoʊz").assertIsDisplayed()
         composeRule.onNodeWithText("Continuer").performClick()
+        assertEquals(
+            0,
+            composeRule.onAllNodesWithTag("word_answer_goes").fetchSemanticsNodes().size
+        )
+        composeRule.onNodeWithText("Répondre").performClick()
         composeRule.onNodeWithTag("word_answer_goes").performTextInput("goes")
-        composeRule.onNodeWithText("Vérifier").performClick()
+        composeRule.mainClock.autoAdvance = false
+        composeRule.onNodeWithTag("word_answer_goes").performImeAction()
+        composeRule.mainClock.advanceTimeByFrame()
         composeRule.onNodeWithText("Correct!").assertIsDisplayed()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.mainClock.advanceTimeBy(600)
+        composeRule.mainClock.autoAdvance = true
         composeRule.onNodeWithText("Glissez le bon mot dans la phrase").assertIsDisplayed()
     }
 
@@ -491,12 +503,15 @@ class FreeModeScreenTest {
 
         composeRule.onNodeWithText("Prononciation").performClick()
         composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.mainClock.autoAdvance = false
         composeRule
-            .onNodeWithContentDescription("Prononcer dans la langue étudiée")
-            .performClick()
-        composeRule.waitForIdle()
-        composeRule.onNodeWithText("Vérifier").performClick()
+            .onNodeWithText("Répondre")
+            .performSemanticsAction(SemanticsActions.OnLongClick)
+        composeRule.mainClock.advanceTimeByFrame()
         composeRule.onNodeWithText("Bonne prononciation!").assertIsDisplayed()
+        composeRule.mainClock.advanceTimeBy(600)
+        composeRule.mainClock.autoAdvance = true
+        composeRule.onNodeWithText("Glissez le bon mot dans la phrase").assertIsDisplayed()
     }
 
     @Test
@@ -531,6 +546,45 @@ class FreeModeScreenTest {
     }
 
     @Test
+    fun wrongAnswerStaysVisibleAndNextOnlyReturnsThroughUnlockedSteps() {
+        composeRule.setContent {
+            LarpTheme(dynamicColor = false) {
+                com.anis.larp.ui.ExercisesScreen(
+                    exercises = listOf(
+                        Exercise(
+                            id = "exercise:unlock-history",
+                            title = "Navigation guidée",
+                            instructions = "Répondez puis revenez en arrière.",
+                            prompt = "Practice.",
+                            expectedAnswer = "goes",
+                            languageTag = "en-US",
+                            createdAtMillis = 1L,
+                            plan = tenStepPlan()
+                        )
+                    )
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Navigation guidée").performClick()
+        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithText("Répondre").performClick()
+        composeRule.onNodeWithTag("word_answer_goes").performTextInput("wrong")
+        composeRule.onNodeWithTag("word_answer_goes").performImeAction()
+        composeRule.onNodeWithText("Pas tout à fait. Réessayez.").assertIsDisplayed()
+        composeRule.onNodeWithText("Suivant").assertIsNotEnabled()
+
+        composeRule.onNodeWithTag("word_answer_goes").performTextClearance()
+        composeRule.onNodeWithTag("word_answer_goes").performTextInput("goes")
+        composeRule.onNodeWithTag("word_answer_goes").performImeAction()
+        composeRule.onNodeWithText("Glissez le bon mot dans la phrase").assertIsDisplayed()
+        composeRule.onNodeWithText("Précédent").performClick()
+        composeRule.onNodeWithText("Étape 2 sur 10").assertIsDisplayed()
+        composeRule.onNodeWithText("Suivant").assertIsEnabled().performClick()
+        composeRule.onNodeWithText("Glissez le bon mot dans la phrase").assertIsDisplayed()
+    }
+
+    @Test
     fun fixedTenStepExerciseCompletesWithSummaryAndDifficultyRating() {
         var completion: Triple<Int, Long, Int>? = null
         var rating: Int? = null
@@ -558,34 +612,34 @@ class FreeModeScreenTest {
 
         composeRule.onNodeWithText("Routine scolaire").performClick()
         composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithText("Répondre").performClick()
         composeRule.onNodeWithTag("word_answer_goes").performTextInput("goes")
-        composeRule.onNodeWithText("Vérifier").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithTag("word_answer_goes").performImeAction()
         composeRule.onNodeWithText("goes").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithText("Vérifier").performClick()
+        composeRule.onNodeWithText("Répondre").performClick()
         composeRule.onNodeWithTag("recall_answer").performTextInput("goes")
-        composeRule.onNodeWithText("Vérifier").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithTag("recall_answer").performImeAction()
 
         composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithText("Répondre").performClick()
         composeRule.onNodeWithTag("word_answer_school").performTextInput("school")
-        composeRule.onNodeWithText("Vérifier").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithTag("word_answer_school").performImeAction()
         composeRule.onNodeWithText("school").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
-        composeRule.onNodeWithTag("recall_answer").performTextInput("school")
         composeRule.onNodeWithText("Vérifier").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithText("Répondre").performClick()
+        composeRule.onNodeWithTag("recall_answer").performTextInput("school")
+        composeRule.onNodeWithTag("recall_answer").performImeAction()
 
+        composeRule.onNodeWithText("Répondre").performClick()
         composeRule.onNodeWithTag("recall_answer")
             .performTextInput("She goes to school.")
-        composeRule.onNodeWithText("Vérifier").performClick()
-        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithTag("recall_answer").performImeAction()
         composeRule.onNodeWithTag("final_typed_0").performTextInput("goes")
         composeRule.onNodeWithTag("final_typed_1").performTextInput("school")
         composeRule.onNodeWithText("single").performClick()
         composeRule.onNodeWithText("day").performClick()
-        composeRule.onNodeWithText("Terminer l'exercice")
+        composeRule.onNodeWithText("Vérifier")
             .assertIsEnabled()
             .performScrollTo()
             .performClick()

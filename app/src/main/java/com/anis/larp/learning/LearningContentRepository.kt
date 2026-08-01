@@ -661,7 +661,7 @@ fun normalizeGeneratedExerciseDefinition(
         ExerciseType.MULTIPLE_CHOICE -> {
             val repaired = choices.toMutableList()
             if (repaired.none { it.equals(expectedAnswer, ignoreCase = true) }) {
-                if (repaired.size >= 6) repaired.removeLast()
+                if (repaired.size >= 6) repaired.removeAt(repaired.lastIndex)
                 repaired += expectedAnswer
             }
             if (repaired.size >= 2) {

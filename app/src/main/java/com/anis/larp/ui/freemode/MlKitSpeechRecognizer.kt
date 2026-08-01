@@ -54,6 +54,7 @@ class MlKitSpeechRecognizer(
         onContentActionExecuted = ::onContentActionExecuted
     )
     private val speechSynthesizer = OfflineTextToSpeech(context)
+    private val qwenSpeechRecognizer = QwenSpeechRecognizer.getInstance(applicationContext)
     private val youtubeTranscriptProvider = YoutubeTranscriptProvider()
     private val mutableState = MutableStateFlow(
         FreeModeUiState(
@@ -84,6 +85,11 @@ class MlKitSpeechRecognizer(
                 modelLabel = modelLabel
             )
             runCatching {
+                if (preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR) {
+                    qwenSpeechRecognizer.preload { message ->
+                        updateIdleStatus(message, modelLabel)
+                    }
+                }
                 replyGenerator.preloadSelectedModel { message ->
                     updateIdleStatus(message, modelLabel)
                 }
@@ -122,6 +128,9 @@ class MlKitSpeechRecognizer(
             "Terminez la conversation Libre avant d'utiliser le micro de l'exercice."
         }
         val locale = speechRecognitionLocaleFor(languageTag)
+        if (preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR) {
+            return qwenSpeechRecognizer.recognize(locale)
+        }
         val selected = selectRecognizer(locale) ?: throw IllegalStateException(
             "La reconnaissance vocale sur l'appareil n'est pas disponible pour ${locale.toLanguageTag()}."
         )
@@ -226,6 +235,10 @@ class MlKitSpeechRecognizer(
 
             var recognizer: SpeechRecognizer? = null
             try {
+                if (preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR) {
+                    recognizeQwenTurn(locale)
+                    return@launch
+                }
                 val selected = selectRecognizer(locale)
                 if (selected == null) {
                     val error = IllegalStateException(
@@ -329,6 +342,37 @@ class MlKitSpeechRecognizer(
         }
     }
 
+    private suspend fun recognizeQwenTurn(locale: Locale) {
+        mutableState.update {
+            it.copy(
+                phase = SpeechPhase.PREPARING,
+                recognitionMode = "Qwen",
+                statusMessage = "Qwen ASR se prépare…"
+            )
+        }
+        val transcription = qwenSpeechRecognizer.recognize(locale) {
+            mutableState.update {
+                it.copy(
+                    phase = SpeechPhase.LISTENING,
+                    recognitionMode = "Qwen",
+                    statusMessage = "Écoute et transcription Qwen sur l'appareil"
+                )
+            }
+            sessionStore.recordRecognitionReady(
+                localeTag = locale.toLanguageTag(),
+                mode = "Qwen"
+            )
+        }
+        mutableState.update {
+            it.copy(
+                committedTranscript = appendText(it.committedTranscript, transcription),
+                partialTranscript = "",
+                statusMessage = "Transcription terminée…"
+            )
+        }
+        scheduleReplyAfterSilence(delayMillis = 100)
+    }
+
     fun pauseConversation() {
         if (!conversationActive || conversationPaused) return
         conversationPaused = true
@@ -376,6 +420,7 @@ class MlKitSpeechRecognizer(
         activeRecognizer = null
         processingUtterance = false
         speechSynthesizer.stop()
+        qwenSpeechRecognizer.cancelRecognition()
         mutableState.update {
             it.copy(
                 phase = SpeechPhase.IDLE,
@@ -630,14 +675,14 @@ class MlKitSpeechRecognizer(
                 selectRequiredRecognizer(
                     locale = locale,
                     mode = SpeechRecognizerOptions.Mode.MODE_ADVANCED,
-                    label = "Avancé"
+                    label = "Gemini · avancée"
                 )
 
             ModelPreferences.STT_ML_KIT_BASIC ->
                 selectRequiredRecognizer(
                     locale = locale,
                     mode = SpeechRecognizerOptions.Mode.MODE_BASIC,
-                    label = "Basique"
+                    label = "Gemini · basique"
                 )
 
             else -> selectBestRecognizer(locale)
@@ -665,7 +710,7 @@ class MlKitSpeechRecognizer(
             withTimeout(10_000) { advanced.checkStatus() }
         }.getOrNull()
         if (advancedStatus == FeatureStatus.AVAILABLE) {
-            return SelectedRecognizer(advanced, "Avancé")
+            return SelectedRecognizer(advanced, "Gemini · avancée")
         }
         advanced.close()
 
@@ -684,7 +729,7 @@ class MlKitSpeechRecognizer(
                     }
                 }
                 if (result is DownloadStatus.DownloadCompleted) {
-                    SelectedRecognizer(basic, "Basique")
+                    SelectedRecognizer(basic, "Gemini · basique")
                 } else {
                     basic.close()
                     throw (result as DownloadStatus.DownloadFailed).e

@@ -35,9 +35,9 @@ class SharedModelStore(context: Context) {
         .filter { it.repository.equals(repository, ignoreCase = true) }
         .filter { model ->
             artifactName == null ||
-                model.fileName.equals(
-                    artifactName.substringAfterLast('/'),
-                    ignoreCase = true
+                artifactFileNameMatches(
+                    actualFileName = model.fileName,
+                    requestedFileName = artifactName.substringAfterLast('/')
                 )
         }
         .maxByOrNull(SharedModelFile::sizeBytes)
@@ -49,9 +49,9 @@ class SharedModelStore(context: Context) {
         val candidates = querySharedModels()
             .filter { it.repository.equals(repository, ignoreCase = true) }
             .filter {
-                it.fileName.equals(
-                    artifactName.substringAfterLast('/'),
-                    ignoreCase = true
+                artifactFileNameMatches(
+                    actualFileName = it.fileName,
+                    requestedFileName = artifactName.substringAfterLast('/')
                 )
             }
             .map { model ->
@@ -152,6 +152,7 @@ class SharedModelStore(context: Context) {
         return querySharedModels()
             .asSequence()
             .filter { !it.isPending && it.sizeBytes > 0L }
+            .filter { it.fileName.endsWith(".litertlm", ignoreCase = true) }
             .sortedByDescending { model ->
                 model.fileName.equals(
                     profile.gemmaArtifactFileName,
@@ -218,7 +219,10 @@ class SharedModelStore(context: Context) {
             )
             while (cursor.moveToNext()) {
                 val fileName = cursor.getString(nameIndex).orEmpty()
-                if (!fileName.endsWith(".litertlm", ignoreCase = true)) continue
+                if (
+                    !fileName.endsWith(".litertlm", ignoreCase = true) &&
+                    !fileName.endsWith(".gguf", ignoreCase = true)
+                ) continue
                 add(
                     SharedModelFile(
                         uri = ContentUris.withAppendedId(
@@ -285,12 +289,16 @@ class SharedModelStore(context: Context) {
         "https://huggingface.co/${repository.trim()}"
 
     private fun safeFileName(value: String): String {
-        val stem = value.substringBeforeLast(".litertlm")
+        val extension = when {
+            value.endsWith(".gguf", ignoreCase = true) -> ".gguf"
+            else -> ".litertlm"
+        }
+        val stem = value.removeSuffix(extension)
             .replace(Regex("[^A-Za-z0-9._-]+"), "-")
             .trim('-')
             .take(100)
             .ifBlank { "model" }
-        return "$stem.litertlm"
+        return "$stem$extension"
     }
 
     companion object {
@@ -307,4 +315,19 @@ class SharedModelStore(context: Context) {
             MediaStore.MediaColumns.IS_PENDING
         )
     }
+}
+
+internal fun artifactFileNameMatches(
+    actualFileName: String,
+    requestedFileName: String
+): Boolean {
+    if (actualFileName.equals(requestedFileName, ignoreCase = true)) return true
+    val requestedExtension = requestedFileName.substringAfterLast('.', "")
+    if (requestedExtension.isBlank()) return false
+    val requestedStem = requestedFileName.substringBeforeLast('.')
+    val duplicatePattern = Regex(
+        "^${Regex.escape(requestedStem)} \\(\\d+\\)\\.${Regex.escape(requestedExtension)}$",
+        RegexOption.IGNORE_CASE
+    )
+    return duplicatePattern.matches(actualFileName)
 }
