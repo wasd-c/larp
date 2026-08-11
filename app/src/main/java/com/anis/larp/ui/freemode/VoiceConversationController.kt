@@ -49,6 +49,8 @@ class VoiceConversationController private constructor(context: Context) {
 
     fun dismissCreatedContent() = recognizer.dismissCreatedContent()
 
+    fun sendTextMessage(message: String) = recognizer.submitTextMessage(message)
+
     suspend fun speakPracticeWord(text: String, languageTag: String) =
         recognizer.speakPracticeWord(text, languageTag)
 
@@ -66,6 +68,18 @@ class VoiceConversationController private constructor(context: Context) {
         guidance: String,
         onPreparingModel: (String) -> Unit = {}
     ) = recognizer.remixLesson(lesson, guidance, onPreparingModel)
+
+    suspend fun answerLessonQuestion(
+        lesson: Lesson,
+        question: String,
+        conversationHistory: List<ConversationTurn>,
+        onPreparingModel: (String) -> Unit = {}
+    ): GeneratedReply = recognizer.answerLessonQuestion(
+        lesson = lesson,
+        question = question,
+        conversationHistory = conversationHistory,
+        onPreparingModel = onPreparingModel
+    )
 
     suspend fun importExerciseFromText(
         sourceText: String,

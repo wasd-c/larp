@@ -1,13 +1,15 @@
 <resources>
     <string name="app_name">larp</string>
     <string name="exercise_back">Back</string>
-    <string name="exercise_step_progress">Step %1$d of 10</string>
+    <string name="exercise_step_progress">Step %1$d of %2$d</string>
     <string name="exercise_previous">Previous</string>
     <string name="exercise_answer">Answer</string>
     <string name="exercise_continue">Continue</string>
     <string name="exercise_verify">Check</string>
     <string name="exercise_next">Next</string>
-    <string name="exercise_hold_to_speak">Hold to speak</string>
+    <string name="exercise_speak">Speak</string>
+    <string name="exercise_listening_short">Listening…</string>
+    <string name="exercise_meaning">Meaning</string>
     <string name="exercise_learn_word">Learn this word</string>
     <string name="exercise_speak_or_type">Say or type “%1$s”</string>
     <string name="exercise_your_answer">Your answer</string>
@@ -41,4 +43,12 @@
     <string name="exercise_exit_message">Your current progress is not saved. If you leave now, you will have to restart this exercise.</string>
     <string name="exercise_exit_confirm">Leave</string>
     <string name="exercise_exit_dismiss">Continue exercise</string>
+    <string name="lesson_choose_meaning">Choose the meaning of “%1$s”</string>
+    <string name="lesson_listen_choose_target">Listen and choose what you hear</string>
+    <string name="lesson_listen_choose_meaning">Listen and choose the correct meaning</string>
+    <string name="lesson_choose_sentence_meaning">Choose the sentence meaning</string>
+    <string name="lesson_match_pairs">Match each target with its meaning</string>
+    <string name="lesson_listen_read">Listen and read the sentence</string>
+    <string name="lesson_reorder_chunks">Put the chunks in order</string>
+    <string name="lesson_type_from_memory">Type the sentence from memory</string>
 </resources>

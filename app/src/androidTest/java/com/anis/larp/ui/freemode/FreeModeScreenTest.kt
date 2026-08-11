@@ -172,10 +172,75 @@ class FreeModeScreenTest {
         showFreeMode()
 
         composeRule.onNodeWithTag("open_model_settings").performClick()
-        composeRule.onNodeWithText("Modèles").assertIsDisplayed()
-        composeRule.onNodeWithText("Voix, conversation et écoute").assertIsDisplayed()
+        composeRule.onNodeWithText("Réglages").assertIsDisplayed()
+        composeRule.onNodeWithText("Langue, voix, conversation et écoute").assertIsDisplayed()
+        composeRule.onNodeWithTag("learning_language_settings").assertIsDisplayed()
         composeRule.onNodeWithTag("model_settings_back").performClick()
         composeRule.onNodeWithText("larp").assertIsDisplayed()
+    }
+
+    @Test
+    fun freeModeCanSendATypedMessageWithoutStartingTheMicrophone() {
+        var sentMessage: String? = null
+        composeRule.setContent {
+            LarpTheme(dynamicColor = false) {
+                FreeModeScreen(
+                    uiState = FreeModeUiState(modelsReady = true),
+                    onPrimaryAction = {},
+                    onSendText = { sentMessage = it },
+                    animationsEnabled = false
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("free_text_input")
+            .performScrollTo()
+            .performTextInput("Explique-moi cette expression")
+        composeRule.onNodeWithTag("send_free_text").performClick()
+
+        composeRule.runOnIdle {
+            assertEquals("Explique-moi cette expression", sentMessage)
+        }
+        composeRule.onNodeWithText("Commencer à parler").assertIsDisplayed()
+    }
+
+    @Test
+    fun askingAboutALessonTurnsTheDetailIntoAChat() {
+        val lesson = Lesson(
+            id = "lesson:chat",
+            title = "Se présenter",
+            objective = "Dire son nom naturellement.",
+            content = "Me llamo Ana signifie Je m'appelle Ana.",
+            languageTag = "es-ES",
+            createdAtMillis = 1L,
+            topic = "Présentation"
+        )
+        composeRule.setContent {
+            LarpTheme(dynamicColor = false) {
+                com.anis.larp.ui.LessonsScreen(
+                    lessons = listOf(lesson),
+                    onAskQuestion = { _, question, _, _ ->
+                        GeneratedReply(
+                            text = "Me llamo sert à donner son nom.",
+                            locale = Locale.forLanguageTag("fr-FR")
+                        ).also {
+                            assertEquals("Quand utiliser me llamo ?", question)
+                        }
+                    }
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Se présenter").performClick()
+        composeRule.onNodeWithTag("lesson_question_input")
+            .performScrollTo()
+            .performTextInput("Quand utiliser me llamo ?")
+        composeRule.onNodeWithTag("send_lesson_question").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Discussion sur la leçon").assertIsDisplayed()
+        composeRule.onNodeWithText("Quand utiliser me llamo ?").assertIsDisplayed()
+        composeRule.onNodeWithText("Me llamo sert à donner son nom.").assertIsDisplayed()
     }
 
     @Test
@@ -394,17 +459,6 @@ class FreeModeScreenTest {
             .performClick()
         composeRule.waitForIdle()
         composeRule.onNodeWithText("Débat avancé").assertIsDisplayed()
-    }
-
-    @Test
-    fun futureActionsAreDisabled() {
-        showFreeMode()
-
-        composeRule.onNodeWithTag("resume_action").assertIsNotEnabled()
-        composeRule.onNodeWithTag("write_action").assertIsNotEnabled()
-        composeRule
-            .onNodeWithText("Disponible dans une prochaine étape")
-            .assertIsDisplayed()
     }
 
     @Test
@@ -685,11 +739,17 @@ class FreeModeScreenTest {
         composeRule.onNodeWithText("Commander poliment").performClick()
         composeRule.onNodeWithText("Étape 1 sur 10").assertIsDisplayed()
         composeRule.onNodeWithText("Apprenez ce mot").assertIsDisplayed()
+        assertEquals(0, composeRule.onAllNodesWithText("10 %").fetchSemanticsNodes().size)
+        assertEquals(1, composeRule.onAllNodesWithText("goes").fetchSemanticsNodes().size)
         assertEquals(
             0,
             composeRule.onAllNodesWithTag("exercise_choice_1")
                 .fetchSemanticsNodes().size
         )
+        composeRule.onNodeWithText("Continuer").performClick()
+        composeRule.onNodeWithText("Parler").assertIsDisplayed()
+        composeRule.onNodeWithText("Répondre").assertIsDisplayed()
+        composeRule.onNodeWithTag("exercise_voice_action").assertIsEnabled()
     }
 
     @Test

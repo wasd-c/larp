@@ -33,37 +33,8 @@ class OfflineTextToSpeech(context: Context) {
                 "Le modèle n'a produit aucun texte utile à prononcer."
             )
         }
-        if (initialization.await() != TextToSpeech.SUCCESS) {
-            throw IllegalStateException("Le moteur de synthèse vocale n'a pas pu démarrer.")
-        }
-
-        val offlineVoices = textToSpeech.voices
-            .orEmpty()
-            .filter { voice ->
-                voice.locale.language == requestedLocale.language &&
-                    !voice.isNetworkConnectionRequired
-            }
-        val bestOfflineVoice = if (selectedVoiceName != null) {
-            offlineVoices.firstOrNull { it.name == selectedVoiceName }
-                ?: throw IllegalStateException(
-                    "La voix TTS sélectionnée n'est plus disponible pour " +
-                        requestedLocale.displayLanguage + "."
-                )
-        } else {
-            offlineVoices
-            .maxByOrNull { voice ->
-                voice.quality
-            }
-        }
-            ?: throw IllegalStateException(
-                "Aucune voix hors ligne n'est installée pour ${requestedLocale.displayLanguage}."
-            )
-
-        if (textToSpeech.setVoice(bestOfflineVoice) == TextToSpeech.ERROR) {
-            throw IllegalStateException(
-                "La voix hors ligne ${bestOfflineVoice.name} n'a pas pu être sélectionnée."
-            )
-        }
+        val spokenLocale = localeMatchingSpokenText(spokenText, requestedLocale)
+        val bestOfflineVoice = preload(spokenLocale, selectedVoiceName)
 
         val utteranceId = UUID.randomUUID().toString()
         suspendCancellableCoroutine { continuation ->
@@ -109,6 +80,37 @@ class OfflineTextToSpeech(context: Context) {
             continuation.invokeOnCancellation {
                 textToSpeech.stop()
             }
+        }
+        return bestOfflineVoice
+    }
+
+    suspend fun preload(
+        requestedLocale: Locale,
+        selectedVoiceName: String? = null
+    ): Voice {
+        if (initialization.await() != TextToSpeech.SUCCESS) {
+            throw IllegalStateException("Le moteur de synthèse vocale n'a pas pu démarrer.")
+        }
+
+        val offlineVoices = textToSpeech.voices
+            .orEmpty()
+            .filter { voice ->
+                voice.locale.language == requestedLocale.language &&
+                    !voice.isNetworkConnectionRequired
+            }
+        val selectedMatchingVoice = selectedVoiceName?.let { name ->
+            offlineVoices.firstOrNull { it.name == name }
+        }
+        val bestOfflineVoice = selectedMatchingVoice ?: offlineVoices
+            .maxByOrNull { voice -> voice.quality }
+            ?: throw IllegalStateException(
+                "Aucune voix hors ligne n'est installée pour ${requestedLocale.displayLanguage}."
+            )
+
+        if (textToSpeech.setVoice(bestOfflineVoice) == TextToSpeech.ERROR) {
+            throw IllegalStateException(
+                "La voix hors ligne ${bestOfflineVoice.name} n'a pas pu être sélectionnée."
+            )
         }
         return bestOfflineVoice
     }

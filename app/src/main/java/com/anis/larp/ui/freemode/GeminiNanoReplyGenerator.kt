@@ -10,10 +10,15 @@ import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
 import java.util.Locale
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 
 class GeminiNanoReplyGenerator {
-    private val model: GenerativeModel = Generation.getClient()
+    private val modelLock = Any()
+    private val availabilityMutex = Mutex()
+    @Volatile private var model: GenerativeModel? = null
+    @Volatile private var available = false
 
     suspend fun prepare(onPreparingModel: () -> Unit) {
         ensureAvailable(onPreparingModel)
@@ -25,6 +30,7 @@ class GeminiNanoReplyGenerator {
         tutorContext: TutorContext,
         conversationHistory: List<ConversationTurn> = emptyList(),
         requestedContentKind: LearningContentRequestKind? = null,
+        lessonContext: LessonChatContext? = null,
         onPreparingModel: () -> Unit
     ): GeneratedReply {
         ensureAvailable(onPreparingModel)
@@ -43,7 +49,12 @@ class GeminiNanoReplyGenerator {
                 recognitionLocale = recognitionLocale,
                 tutorContext = tutorContext,
                 conversationHistory = conversationHistory,
-                toolMode = TutorToolMode.TAGGED_ACTIONS
+                toolMode = if (lessonContext == null) {
+                    TutorToolMode.TAGGED_ACTIONS
+                } else {
+                    TutorToolMode.NONE
+                },
+                lessonContext = lessonContext
             )
             parseGeneratedReply(
                 rawReply = generateRawReply(prompt),
@@ -59,7 +70,7 @@ class GeminiNanoReplyGenerator {
 
     private suspend fun generateRawReply(prompt: String): String {
         val response = withTimeout(60_000) {
-            model.generateContent(prompt)
+            getOrCreateModel().generateContent(prompt)
         }
         return response.candidates.firstOrNull()?.text?.trim()
             .orEmpty()
@@ -68,31 +79,43 @@ class GeminiNanoReplyGenerator {
             }
     }
 
-    fun close() {
-        model.close()
+    fun release() {
+        val modelToClose = synchronized(modelLock) {
+            model.also { model = null }
+        }
+        available = false
+        modelToClose?.close()
     }
 
     private suspend fun ensureAvailable(onPreparingModel: () -> Unit) {
-        when (withTimeout(10_000) { model.checkStatus() }) {
-            FeatureStatus.AVAILABLE -> Unit
-            FeatureStatus.DOWNLOADABLE,
-            FeatureStatus.DOWNLOADING -> {
-                onPreparingModel()
-                val result = withTimeout(300_000) {
-                    model.download().first { status ->
-                        status is DownloadStatus.DownloadCompleted ||
-                            status is DownloadStatus.DownloadFailed
+        if (available) return
+        availabilityMutex.withLock {
+            if (available) return
+            val activeModel = getOrCreateModel()
+            when (withTimeout(10_000) { activeModel.checkStatus() }) {
+                FeatureStatus.AVAILABLE -> available = true
+                FeatureStatus.DOWNLOADABLE,
+                FeatureStatus.DOWNLOADING -> {
+                    onPreparingModel()
+                    val result = withTimeout(300_000) {
+                        activeModel.download().first { status ->
+                            status is DownloadStatus.DownloadCompleted ||
+                                status is DownloadStatus.DownloadFailed
+                        }
                     }
+                    if (result is DownloadStatus.DownloadFailed) throw result.e
+                    available = true
                 }
-                if (result is DownloadStatus.DownloadFailed) {
-                    throw result.e
-                }
-            }
 
-            else -> throw IllegalStateException(
-                "Gemini Nano n'est pas disponible sur cet appareil."
-            )
+                else -> throw IllegalStateException(
+                    "Gemini Nano n'est pas disponible sur cet appareil."
+                )
+            }
         }
+    }
+
+    private fun getOrCreateModel(): GenerativeModel = model ?: synchronized(modelLock) {
+        model ?: Generation.getClient().also { model = it }
     }
 }
 
@@ -133,10 +156,11 @@ internal fun parseGeneratedReply(
         throw IllegalArgumentException("Le modèle n'a produit aucune réponse à prononcer.")
     }
 
-    val parsedLocale = languageTag
+    val requestedLocale = languageTag
         ?.let(::localeForSpeechTag)
         ?.takeIf { it.language.isNotBlank() }
-        ?: inferReplyLocale(text, fallbackLocale)
+        ?: fallbackLocale
+    val parsedLocale = localeMatchingSpokenText(text, requestedLocale)
     return GeneratedReply(
         text = text,
         locale = parsedLocale,
@@ -153,85 +177,64 @@ internal fun parseLearningContentAction(
 ): com.anis.larp.learning.LearningContentAction? {
     val fields = parseLearningContentFields(rawReply)
     return when (fields["ACTION"]?.uppercase(Locale.ROOT)) {
-        "CREATE_EXERCISE" -> {
-            val prompt = fields.requireActionField("ACTION_PROMPT")
-            val expectedAnswer = fields.requireActionField("ACTION_EXPECTED_ANSWER")
-            val definition = com.anis.larp.learning.normalizeGeneratedExerciseDefinition(
-                typeValue = fields["ACTION_EXERCISE_TYPE"],
-                expectedAnswer = expectedAnswer,
-                choicesValue = fields["ACTION_CHOICES"]
-            )
-            com.anis.larp.learning.validateExerciseDefinition(
-                type = definition.type,
-                prompt = prompt,
-                expectedAnswer = expectedAnswer,
-                choices = definition.choices
-            )
-            com.anis.larp.learning.LearningContentAction.CreateExercise(
-                title = fields.requireActionField("ACTION_TITLE"),
-                instructions = fields.requireActionField("ACTION_INSTRUCTIONS"),
-                prompt = prompt,
-                expectedAnswer = expectedAnswer,
-                languageTag = fields["ACTION_LANGUAGE_TAG"]
-                    .orEmpty()
-                    .ifBlank { fallbackLanguageTag },
-                type = definition.type,
-                choices = definition.choices,
-                difficulty = com.anis.larp.learning.ExerciseDifficulty.fromWireValue(
-                    fields["ACTION_DIFFICULTY"]
-                ),
-                topic = LearningTopics.choose(
-                    requested = fields["ACTION_TOPIC"],
-                    context = listOf(
-                        fields["ACTION_TITLE"],
-                        fields["ACTION_INSTRUCTIONS"],
-                        prompt
-                    ).joinToString(" ")
-                ),
-                plan = ExercisePlan(
-                    words = listOf(
-                        LearnedWord(
-                            text = fields["ACTION_WORD_1"].orEmpty(),
-                            pronunciation = fields["ACTION_WORD_1_PRONUNCIATION"].orEmpty(),
-                            definition = fields["ACTION_WORD_1_DEFINITION"].orEmpty(),
-                            gapSentence = fields["ACTION_WORD_1_GAP_SENTENCE"].orEmpty(),
-                            distractors = decodeExerciseChoices(fields["ACTION_WORD_1_DISTRACTORS"]),
-                            recallPrompt = fields["ACTION_WORD_1_RECALL_PROMPT"].orEmpty(),
-                            recallAnswer = fields["ACTION_WORD_1_RECALL_ANSWER"].orEmpty()
+        "SUBMIT_LESSON_CONTENT" -> {
+            val validator = com.anis.larp.learning.LessonContentValidator()
+            val requested = if (fields["ACTION_X1"].isNullOrBlank()) {
+                com.anis.larp.learning.decodeLessonContent(
+                    topic = fields.requireActionField("ACTION_TOPIC"),
+                    targets = fields.requireActionField("ACTION_TARGETS"),
+                    sentences = fields.requireActionField("ACTION_SENTENCES")
+                )
+            } else {
+                com.anis.larp.learning.explicitLessonContent(
+                    topic = fields.requireActionField("ACTION_TOPIC"),
+                    targets = listOf(
+                        com.anis.larp.learning.LearningTarget(
+                            fields.requireActionField("ACTION_X1"),
+                            fields.requireActionField("ACTION_M1"),
+                            fields["ACTION_R1"]?.ifBlank { null }
                         ),
-                        LearnedWord(
-                            text = fields["ACTION_WORD_2"].orEmpty(),
-                            pronunciation = fields["ACTION_WORD_2_PRONUNCIATION"].orEmpty(),
-                            definition = fields["ACTION_WORD_2_DEFINITION"].orEmpty(),
-                            gapSentence = fields["ACTION_WORD_2_GAP_SENTENCE"].orEmpty(),
-                            distractors = decodeExerciseChoices(fields["ACTION_WORD_2_DISTRACTORS"]),
-                            recallPrompt = fields["ACTION_WORD_2_RECALL_PROMPT"].orEmpty(),
-                            recallAnswer = fields["ACTION_WORD_2_RECALL_ANSWER"].orEmpty()
+                        com.anis.larp.learning.LearningTarget(
+                            fields.requireActionField("ACTION_X2"),
+                            fields.requireActionField("ACTION_M2"),
+                            fields["ACTION_R2"]?.ifBlank { null }
+                        ),
+                        com.anis.larp.learning.LearningTarget(
+                            fields.requireActionField("ACTION_X3"),
+                            fields.requireActionField("ACTION_M3"),
+                            fields["ACTION_R3"]?.ifBlank { null }
                         )
                     ),
-                    hardPrompt = fields["ACTION_HARD_PROMPT"].orEmpty(),
-                    hardAnswer = fields["ACTION_HARD_ANSWER"].orEmpty(),
-                    finalSentence = fields["ACTION_FINAL_SENTENCE"].orEmpty(),
-                    finalAnswers = decodeExerciseChoices(fields["ACTION_FINAL_ANSWERS"])
+                    sentences = listOf(
+                        com.anis.larp.learning.explicitSentence(
+                            fields.requireActionField("ACTION_S1"),
+                            fields.requireActionField("ACTION_SM1"),
+                            fields.requireActionField("ACTION_I1"),
+                            fields["ACTION_C1"].orEmpty()
+                        ),
+                        com.anis.larp.learning.explicitSentence(
+                            fields.requireActionField("ACTION_S2"),
+                            fields.requireActionField("ACTION_SM2"),
+                            fields.requireActionField("ACTION_I2"),
+                            fields["ACTION_C2"].orEmpty()
+                        )
+                    )
                 )
+            }
+            val content = validator.repair(
+                requested,
+                fallbackLanguageTag
+            )
+            val validation = validator.validate(content, fallbackLanguageTag)
+            require(validation is com.anis.larp.learning.LessonContentValidation.Valid) {
+                (validation as com.anis.larp.learning.LessonContentValidation.Invalid)
+                    .reasons.joinToString("; ")
+            }
+            com.anis.larp.learning.LearningContentAction.CreateLessonContent(
+                content = content,
+                languageTag = fallbackLanguageTag
             )
         }
-        "CREATE_LESSON" -> com.anis.larp.learning.LearningContentAction.CreateLesson(
-            title = fields.requireActionField("ACTION_TITLE"),
-            objective = fields.requireActionField("ACTION_OBJECTIVE"),
-            content = fields.requireActionField("ACTION_CONTENT"),
-            languageTag = fields["ACTION_LANGUAGE_TAG"]
-                .orEmpty()
-                .ifBlank { fallbackLanguageTag },
-            topic = LearningTopics.choose(
-                requested = fields["ACTION_TOPIC"],
-                context = listOf(
-                    fields["ACTION_TITLE"],
-                    fields["ACTION_OBJECTIVE"],
-                    fields["ACTION_CONTENT"]
-                ).joinToString(" ")
-            )
-        )
         else -> null
     }
 }
@@ -266,7 +269,7 @@ private fun parseLearningContentFields(rawReply: String): Map<String, String> {
             protocolField?.first in ACTION_SECTION_END_FIELDS -> {
                 flushActiveField()
             }
-            activeKey == "ACTION_CONTENT" -> {
+            activeKey in MULTILINE_ACTION_FIELDS -> {
                 if (activeValue.isNotEmpty()) activeValue.append('\n')
                 activeValue.append(rawLine.trimEnd())
             }
@@ -300,6 +303,12 @@ private val ACTION_SECTION_END_FIELDS = setOf(
     "ANSWER"
 )
 
+private val MULTILINE_ACTION_FIELDS = setOf(
+    "ACTION_CONTENT",
+    "ACTION_TARGETS",
+    "ACTION_SENTENCES"
+)
+
 private fun Map<String, String>.requireActionField(key: String): String =
     get(key)?.takeIf(String::isNotBlank)
         ?: throw IllegalArgumentException(
@@ -326,11 +335,4 @@ private fun localeForSpeechTag(tag: String): Locale =
         Locale.forLanguageTag("zh${tag.drop(3)}")
     } else {
         Locale.forLanguageTag(tag)
-    }
-
-private fun inferReplyLocale(text: String, fallbackLocale: Locale): Locale =
-    if (text.any { character -> character.code in 0x3400..0x9FFF }) {
-        Locale.SIMPLIFIED_CHINESE
-    } else {
-        fallbackLocale
     }

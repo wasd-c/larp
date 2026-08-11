@@ -32,6 +32,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
     private val startupMutex = Mutex()
     @Volatile private var serverProcess: Process? = null
     @Volatile private var serverPort: Int? = null
+    @Volatile private var serverReady = false
     @Volatile private var activeRecorder: AudioRecord? = null
     @Volatile private var recentServerLog = ""
 
@@ -58,6 +59,12 @@ class QwenSpeechRecognizer private constructor(context: Context) {
         }
     }
 
+    /** Releases the native ASR process when another STT engine is selected. */
+    fun release() {
+        cancelRecognition()
+        synchronized(lock) { stopServerLocked() }
+    }
+
     private suspend fun ensureServer(onStatus: (String) -> Unit = {}) =
         startupMutex.withLock {
             ensureServerLocked(onStatus)
@@ -70,7 +77,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
             )
         }
         serverPort?.takeIf { serverProcess?.isAlive == true }?.let { port ->
-            if (isHealthy(port)) return
+            if (serverReady || isHealthy(port)) return
             onStatus("Chargement de Qwen ASR en mémoire…")
             awaitServerReady(port, onStatus)
             return
@@ -116,6 +123,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                     environment()["LD_LIBRARY_PATH"] = nativeDirectory.absolutePath
                     environment()["GGML_BACKEND_PATH"] = nativeDirectory.absolutePath
                 }.start()
+                serverReady = false
                 serverProcess = process
                 serverPort = port
                 Thread({
@@ -123,6 +131,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                         process.inputStream.bufferedReader().useLines { lines ->
                             lines.forEach { line ->
                                 recentServerLog = line.takeLast(500)
+                                if (isServerReadyLog(line)) serverReady = true
                                 Log.d(TAG, line)
                             }
                         }
@@ -139,13 +148,14 @@ class QwenSpeechRecognizer private constructor(context: Context) {
     }
 
     private suspend fun awaitServerReady(port: Int, onStatus: (String) -> Unit) {
-        repeat(SERVER_START_ATTEMPTS) {
+        val deadline = SystemClock.elapsedRealtime() + SERVER_START_TIMEOUT_MILLIS
+        while (SystemClock.elapsedRealtime() < deadline) {
             if (serverProcess?.isAlive != true) {
                 throw IllegalStateException(
                     "Qwen ASR s'est arrêté pendant son chargement. $recentServerLog"
                 )
             }
-            if (isHealthy(port)) {
+            if (serverReady || isHealthy(port)) {
                 onStatus("Qwen ASR est prêt et reste chargé en mémoire.")
                 return
             }
@@ -180,6 +190,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
             activeRecorder = recorder
             val pcm = ByteArrayOutputStream()
             val buffer = ShortArray(FRAME_SAMPLES)
+            val pcmFrame = ByteArray(FRAME_SAMPLES * 2)
             var speechStarted = false
             var silenceStartedAt = 0L
             val startedAt = SystemClock.elapsedRealtime()
@@ -197,10 +208,12 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                     } else if (speechStarted && silenceStartedAt == 0L) {
                         silenceStartedAt = now
                     }
-                    val bytes = ByteBuffer.allocate(count * 2)
-                        .order(ByteOrder.LITTLE_ENDIAN)
-                    repeat(count) { bytes.putShort(buffer[it]) }
-                    pcm.write(bytes.array())
+                    repeat(count) { index ->
+                        val sample = buffer[index].toInt()
+                        pcmFrame[index * 2] = (sample and 0xFF).toByte()
+                        pcmFrame[index * 2 + 1] = ((sample ushr 8) and 0xFF).toByte()
+                    }
+                    pcm.write(pcmFrame, 0, count * 2)
                     if (
                         speechStarted && silenceStartedAt > 0L &&
                         now - silenceStartedAt >= END_OF_SPEECH_MILLIS
@@ -286,7 +299,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                 if (responseCode !in 200..299) {
                     throw IOException("Qwen ASR a répondu $responseCode : ${body.take(300)}")
                 }
-                JSONObject(body).optString("text").trim().ifBlank {
+                sanitizeQwenTranscript(JSONObject(body).optString("text")).ifBlank {
                     throw IOException("Qwen ASR n'a renvoyé aucune transcription.")
                 }
             } finally {
@@ -302,8 +315,8 @@ class QwenSpeechRecognizer private constructor(context: Context) {
         val connection = URI("http://$LOOPBACK_HOST:$port/health")
             .toURL().openConnection() as HttpURLConnection
         return try {
-            connection.connectTimeout = 250
-            connection.readTimeout = 250
+            connection.connectTimeout = 1_000
+            connection.readTimeout = 1_000
             connection.responseCode in 200..299
         } catch (_: IOException) {
             false
@@ -314,6 +327,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
 
     private fun stopServerLocked() {
         serverProcess?.destroy()
+        serverReady = false
         serverProcess = null
         serverPort = null
     }
@@ -327,14 +341,33 @@ class QwenSpeechRecognizer private constructor(context: Context) {
         private const val SPEECH_PEAK_THRESHOLD = 700
         private const val END_OF_SPEECH_MILLIS = 900L
         private const val MAX_RECORDING_MILLIS = 30_000L
-        private const val SERVER_START_ATTEMPTS = 240
+        private const val SERVER_START_TIMEOUT_MILLIS = 120_000L
         private const val SERVER_START_POLL_MILLIS = 250L
 
         @Volatile private var instance: QwenSpeechRecognizer? = null
+
+        internal fun isServerReadyLog(line: String): Boolean =
+            line.contains("server is listening", ignoreCase = true) ||
+                line.contains("all slots are idle", ignoreCase = true)
 
         fun getInstance(context: Context): QwenSpeechRecognizer =
             instance ?: synchronized(this) {
                 instance ?: QwenSpeechRecognizer(context).also { instance = it }
             }
     }
+}
+
+internal fun sanitizeQwenTranscript(rawText: String): String {
+    val marker = "<asr_text>"
+    val markerIndex = rawText.indexOf(marker, ignoreCase = true)
+    val transcription = if (markerIndex >= 0) {
+        rawText.substring(markerIndex + marker.length)
+    } else {
+        rawText
+    }
+    return transcription
+        .replace(Regex("</?asr_text>", RegexOption.IGNORE_CASE), " ")
+        .replace(Regex("<\\|[^>]+\\|>"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 }

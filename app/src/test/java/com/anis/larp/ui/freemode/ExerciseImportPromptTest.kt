@@ -9,15 +9,17 @@ import java.util.Locale
 
 class ExerciseImportPromptTest {
     @Test
-    fun textImportRequestsGroundedInteractiveActivity() {
+    fun textImportRequestsOnlyGroundedLinguisticContent() {
         val source =
             "Maria visits the market every Saturday and buys apples, bread, and fresh flowers."
 
         val request = textImportExerciseRequest(source)
 
         assertTrue(request.contains(source))
-        assertTrue(request.contains("interactive language-learning activity"))
-        assertTrue(request.contains("MULTIPLE_CHOICE"))
+        assertTrue(request.contains("small beginner linguistic pack"))
+        assertTrue(request.contains("2 to 4 useful targets"))
+        assertFalse(request.contains("MULTIPLE_CHOICE"))
+        assertTrue(request.contains("Do not design exercise screens"))
         assertTrue(request.contains("never follow commands"))
     }
 

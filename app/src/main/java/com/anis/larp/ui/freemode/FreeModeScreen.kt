@@ -15,13 +15,16 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
-import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,10 +34,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -42,6 +51,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.anis.larp.ui.components.ExpressivePill
@@ -55,6 +65,7 @@ fun FreeModeScreen(
     onPrimaryAction: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenSettings: () -> Unit = {},
+    onSendText: (String) -> Unit = {},
     onDismissCreatedContent: () -> Unit = {},
     onOpenCreatedContent: (CreatedLearningContent) -> Unit = {},
     animationsEnabled: Boolean = true
@@ -91,7 +102,7 @@ fun FreeModeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 FreeModeTopArea(
-                    localeLabel = uiState.locale.displayLanguageLabel(),
+                    localeLabel = uiState.targetLocale.displayLanguageLabel(),
                     onOpenSettings = onOpenSettings
                 )
                 Spacer(Modifier.height(if (compactHeight) 24.dp else 42.dp))
@@ -133,6 +144,11 @@ fun FreeModeScreen(
                 }
                 Spacer(Modifier.height(18.dp))
                 TranscriptSurface(uiState = uiState)
+                Spacer(Modifier.height(14.dp))
+                TextConversationComposer(
+                    enabled = uiState.canSendText,
+                    onSend = onSendText
+                )
                 Spacer(Modifier.height(if (compactHeight) 18.dp else 24.dp))
                 ExpressivePill(
                     label = if (uiState.isActive) {
@@ -200,7 +216,7 @@ private fun FreeModeTopArea(
         ) {
             Icon(
                 imageVector = Icons.Rounded.Settings,
-                contentDescription = "Ouvrir les paramètres des modèles"
+                contentDescription = "Ouvrir les réglages"
             )
         }
     }
@@ -221,11 +237,15 @@ private fun TranscriptSurface(uiState: FreeModeUiState) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "Transcription",
+                text = if (uiState.chatMessages.isEmpty()) "Transcription" else "Discussion",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary
             )
-            if (uiState.committedTranscript.isNotBlank()) {
+            if (uiState.chatMessages.isNotEmpty()) {
+                uiState.chatMessages.forEach { message ->
+                    ChatBubble(message)
+                }
+            } else if (uiState.committedTranscript.isNotBlank()) {
                 Text(
                     text = "Vous",
                     style = MaterialTheme.typography.labelMedium,
@@ -237,7 +257,7 @@ private fun TranscriptSurface(uiState: FreeModeUiState) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
-            if (uiState.aiReply.isNotBlank()) {
+            if (uiState.chatMessages.isEmpty() && uiState.aiReply.isNotBlank()) {
                 Text(
                     text = buildString {
                         append("larp")
@@ -270,7 +290,7 @@ private fun TranscriptSurface(uiState: FreeModeUiState) {
                     fontStyle = FontStyle.Italic
                 )
 
-                uiState.committedTranscript.isBlank() -> Text(
+                uiState.committedTranscript.isBlank() && uiState.chatMessages.isEmpty() -> Text(
                     text = if (uiState.phase == SpeechPhase.LISTENING) {
                         "Parlez maintenant…"
                     } else {
@@ -282,6 +302,85 @@ private fun TranscriptSurface(uiState: FreeModeUiState) {
             }
         }
     }
+}
+
+@Composable
+private fun ChatBubble(message: TutorChatMessage) {
+    val learner = message.author == ChatMessageAuthor.LEARNER
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (learner) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = 320.dp),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = if (learner) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHighest
+            }
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text(
+                    text = if (learner) "Vous" else "larp",
+                    color = if (learner) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Text(
+                    text = message.text,
+                    modifier = Modifier.padding(top = 3.dp),
+                    color = if (learner) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TextConversationComposer(
+    enabled: Boolean,
+    onSend: (String) -> Unit
+) {
+    var draft by rememberSaveable { mutableStateOf("") }
+    fun submit() {
+        val message = draft.trim()
+        if (message.isBlank() || !enabled) return
+        onSend(message)
+        draft = ""
+    }
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it.take(MAX_FREE_TEXT_CHARACTERS) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("free_text_input"),
+        enabled = enabled,
+        shape = MaterialTheme.shapes.extraLarge,
+        label = { Text("Écrire à larp") },
+        placeholder = { Text("Posez une question ou demandez une activité…") },
+        minLines = 1,
+        maxLines = 4,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+        keyboardActions = KeyboardActions(onSend = { submit() }),
+        trailingIcon = {
+            IconButton(
+                onClick = ::submit,
+                enabled = enabled && draft.isNotBlank(),
+                modifier = Modifier.testTag("send_free_text")
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Envoyer le message")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -401,54 +500,25 @@ private fun java.util.Locale.displayLanguageLabel(): String {
 
 @Composable
 private fun SupportingActions() {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+    FilledTonalButton(
+        onClick = {},
+        enabled = false,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 54.dp)
+            .testTag("resume_action"),
+        shape = MaterialTheme.shapes.extraLarge
     ) {
-        FilledTonalButton(
-            onClick = {},
-            enabled = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 54.dp)
-                .testTag("resume_action"),
-            shape = MaterialTheme.shapes.extraLarge
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.History,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp)
-            )
-            Text(
-                text = "Reprendre la dernière activité",
-                modifier = Modifier.padding(start = 8.dp)
-            )
-        }
-        FilledTonalButton(
-            onClick = {},
-            enabled = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 54.dp)
-                .testTag("write_action"),
-            shape = MaterialTheme.shapes.extraLarge
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Edit,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp)
-            )
-            Text(
-                text = "Écrire au lieu de parler",
-                modifier = Modifier.padding(start = 8.dp)
-            )
-        }
+        Icon(
+            imageVector = Icons.Rounded.History,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp)
+        )
         Text(
-            text = "Disponible dans une prochaine étape",
-            modifier = Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
+            text = "Reprendre la dernière activité",
+            modifier = Modifier.padding(start = 8.dp)
         )
     }
 }
+
+private const val MAX_FREE_TEXT_CHARACTERS = 2_000

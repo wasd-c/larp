@@ -52,12 +52,11 @@ class ImportedModelCreationTest {
                 onPreparingModel = {}
             )
 
-            assertTrue(reply.contentAction is LearningContentAction.CreateExercise)
-            val action = reply.contentAction as LearningContentAction.CreateExercise
-            assertTrue(action.title.isNotBlank())
-            assertTrue(action.instructions.isNotBlank())
-            assertTrue(action.prompt.isNotBlank())
-            assertTrue(action.expectedAnswer.isNotBlank())
+            assertTrue(reply.contentAction is LearningContentAction.CreateLessonContent)
+            val action = reply.contentAction as LearningContentAction.CreateLessonContent
+            assertTrue(action.content.topic.isNotBlank())
+            assertTrue(action.content.targets.size in 2..4)
+            assertTrue(action.content.sentences.isNotEmpty())
         } finally {
             generator.close()
         }
@@ -89,12 +88,11 @@ class ImportedModelCreationTest {
                 onPreparingModel = {}
             )
 
-            assertTrue(reply.contentAction is LearningContentAction.CreateExercise)
-            val action = reply.contentAction as LearningContentAction.CreateExercise
-            assertTrue(action.title.isNotBlank())
-            assertTrue(action.instructions.isNotBlank())
-            assertTrue(action.prompt.isNotBlank())
-            assertTrue(action.expectedAnswer.isNotBlank())
+            assertTrue(reply.contentAction is LearningContentAction.CreateLessonContent)
+            val action = reply.contentAction as LearningContentAction.CreateLessonContent
+            assertTrue(action.content.topic.isNotBlank())
+            assertTrue(action.content.targets.size in 2..4)
+            assertTrue(action.content.sentences.isNotEmpty())
         } finally {
             generator.close()
         }
@@ -126,11 +124,11 @@ class ImportedModelCreationTest {
                 onPreparingModel = {}
             )
 
-            assertTrue(reply.contentAction is LearningContentAction.CreateLesson)
-            val action = reply.contentAction as LearningContentAction.CreateLesson
-            assertTrue(action.title.isNotBlank())
-            assertTrue(action.objective.isNotBlank())
-            assertTrue(action.content.isNotBlank())
+            assertTrue(reply.contentAction is LearningContentAction.CreateLessonContent)
+            val action = reply.contentAction as LearningContentAction.CreateLessonContent
+            assertTrue(action.content.topic.isNotBlank())
+            assertTrue(action.content.targets.size in 2..4)
+            assertTrue(action.content.sentences.isNotEmpty())
         } finally {
             generator.close()
         }

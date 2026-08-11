@@ -28,6 +28,11 @@ build/
 *.iml
 !**/testData/**/*.iml
 .idea/artifacts
+.idea/caches/
+.idea/deploymentTargetSelector.xml
+.idea/deviceManager.xml
+.idea/kotlinc.xml
+.idea/vcs.xml
 .idea/remote-targets.xml
 .idea/libraries/Gradle*.xml
 .idea/libraries/Maven*.xml

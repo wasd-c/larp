@@ -6,15 +6,18 @@ import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.LearningContentRepository
 import com.anis.larp.learning.LearningContentAction
 import com.anis.larp.learning.Lesson
-import com.anis.larp.learning.APPROVED_TOPIC_TAGS_PROMPT
 import com.anis.larp.learning.YoutubeTranscriptSource
 import com.anis.larp.model.ModelPreferences
+import com.anis.larp.model.LearningLanguage
 import com.anis.larp.model.DeviceAccelerationProfile
 import com.anis.larp.model.PromptModelRecord
 import com.anis.larp.model.PromptModelCatalog
+import com.anis.larp.model.requestsLearningLanguageSwitch
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 class PromptReplyRouter(
     context: Context,
@@ -28,6 +31,9 @@ class PromptReplyRouter(
         LearningContentRepository.getInstance(context)
     private val conversationHistory = ArrayDeque<ConversationTurn>()
     private val modelMutex = Mutex()
+    private val selectionLock = Any()
+    @Volatile private var cachedSelectionId: String? = null
+    @Volatile private var cachedSelection: PromptModelRecord? = null
 
     suspend fun preloadSelectedModel(
         onPreparingModel: (String) -> Unit
@@ -40,6 +46,7 @@ class PromptReplyRouter(
             return "Gemini prêt via Android AI Core"
         }
 
+        geminiNano.release()
         val record = selectedCompatibleLiteRtRecord() ?: return null
         val runtime = liteRt.preload(record, onPreparingModel)
         return "${knownModelLabel(record.displayName, record.repository)} prêt · $runtime"
@@ -50,17 +57,32 @@ class PromptReplyRouter(
         recognitionLocale: Locale,
         onPreparingModel: (String) -> Unit
     ): GeneratedReply = modelMutex.withLock {
-        val tutorContext = currentTutorContext()
-        val history = conversationHistory.toList()
+        val storedHistory = conversationHistory.toList()
         val requestedContentKind = requestedLearningContentKind(
             transcript = transcript,
-            conversationHistory = history
+            conversationHistory = storedHistory
         )
+        val explicitlyNamedLanguage = LearningLanguage.explicitlyNamedIn(transcript)
+        if (
+            requestedContentKind == null &&
+            explicitlyNamedLanguage != null &&
+            requestsLearningLanguageSwitch(transcript)
+        ) {
+            preferences.targetLanguage = explicitlyNamedLanguage
+        }
+        val tutorContext = currentTutorContext(
+            targetLanguage = if (requestedContentKind != null) {
+                explicitlyNamedLanguage?.locale ?: preferences.targetLanguage.locale
+            } else {
+                preferences.targetLanguage.locale
+            }
+        )
+        val modelHistory = compactConversationHistory(storedHistory)
         val generatedReply = generateWithSelectedModel(
             transcript = transcript,
             recognitionLocale = recognitionLocale,
             tutorContext = tutorContext,
-            history = history,
+            history = modelHistory,
             requestedContentKind = requestedContentKind,
             onPreparingModel = onPreparingModel,
             onNativeContentAction = onContentActionExecuted
@@ -91,7 +113,7 @@ class PromptReplyRouter(
                 assistantMessage = generatedReply.text
             )
         )
-        while (conversationHistory.size > MAX_HISTORY_TURNS) {
+        while (conversationHistory.size > MAX_STORED_HISTORY_TURNS) {
             conversationHistory.removeFirst()
         }
         generatedReply
@@ -102,7 +124,10 @@ class PromptReplyRouter(
         guidance: String,
         onPreparingModel: (String) -> Unit = {}
     ) = modelMutex.withLock {
-        val tutorContext = currentTutorContext()
+        val tutorContext = currentTutorContext(
+            targetLanguage = LearningLanguage.explicitlyNamedIn(guidance)?.locale
+                ?: Locale.forLanguageTag(exercise.languageTag)
+        )
         val generatedReply = generateWithSelectedModel(
             transcript = exerciseRemixRequest(exercise, guidance),
             recognitionLocale = tutorContext.nativeLanguage,
@@ -112,7 +137,7 @@ class PromptReplyRouter(
             onPreparingModel = onPreparingModel
         )
         val action = generatedReply.contentAction as?
-            LearningContentAction.CreateExercise
+            LearningContentAction.CreateLessonContent
             ?: throw IllegalStateException(
                 "${generatedReply.modelName.ifBlank(::selectedModelLabel)} n'a pas produit " +
                     "un exercice remixé complet. Rien n'a été enregistré."
@@ -125,7 +150,10 @@ class PromptReplyRouter(
         guidance: String,
         onPreparingModel: (String) -> Unit = {}
     ) = modelMutex.withLock {
-        val tutorContext = currentTutorContext()
+        val tutorContext = currentTutorContext(
+            targetLanguage = LearningLanguage.explicitlyNamedIn(guidance)?.locale
+                ?: Locale.forLanguageTag(lesson.languageTag)
+        )
         val generatedReply = generateWithSelectedModel(
             transcript = lessonRemixRequest(lesson, guidance),
             recognitionLocale = tutorContext.nativeLanguage,
@@ -135,7 +163,7 @@ class PromptReplyRouter(
             onPreparingModel = onPreparingModel
         )
         val action = generatedReply.contentAction as?
-            LearningContentAction.CreateLesson
+            LearningContentAction.CreateLessonContent
             ?: throw IllegalStateException(
                 "${generatedReply.modelName.ifBlank(::selectedModelLabel)} n'a pas produit " +
                     "une leçon remixée complète. Rien n'a été enregistré."
@@ -166,6 +194,35 @@ class PromptReplyRouter(
         )
     }
 
+    suspend fun answerLessonQuestion(
+        lesson: Lesson,
+        question: String,
+        conversationHistory: List<ConversationTurn>,
+        onPreparingModel: (String) -> Unit = {}
+    ): GeneratedReply = modelMutex.withLock {
+        val cleanQuestion = question.trim().take(MAX_LESSON_QUESTION_CHARACTERS)
+        require(cleanQuestion.isNotBlank()) { "Écrivez une question sur la leçon." }
+        val lessonLocale = Locale.forLanguageTag(lesson.languageTag)
+            .takeIf { it.language.isNotBlank() }
+            ?: preferences.targetLanguage.locale
+        val tutorContext = currentTutorContext(targetLanguage = lessonLocale)
+        generateWithSelectedModel(
+            transcript = cleanQuestion,
+            recognitionLocale = tutorContext.nativeLanguage,
+            tutorContext = tutorContext,
+            history = compactConversationHistory(conversationHistory),
+            requestedContentKind = null,
+            lessonContext = LessonChatContext(
+                id = lesson.id,
+                title = lesson.title.take(MAX_LESSON_CONTEXT_FIELD_CHARACTERS),
+                objective = lesson.objective.take(MAX_LESSON_CONTEXT_FIELD_CHARACTERS),
+                content = lesson.content.take(MAX_LESSON_CONTEXT_CHARACTERS),
+                topic = lesson.topic.take(MAX_LESSON_CONTEXT_FIELD_CHARACTERS)
+            ),
+            onPreparingModel = onPreparingModel
+        ).copy(contentAction = null, contentActionAlreadyExecuted = false)
+    }
+
     private suspend fun createImportedExercise(
         request: String,
         onPreparingModel: (String) -> Unit
@@ -180,7 +237,7 @@ class PromptReplyRouter(
             onPreparingModel = onPreparingModel
         )
         val action = generatedReply.contentAction as?
-            LearningContentAction.CreateExercise
+            LearningContentAction.CreateLessonContent
             ?: throw IllegalStateException(
                 "${generatedReply.modelName.ifBlank(::selectedModelLabel)} n'a pas produit " +
                     "un quiz complet. Rien n'a été enregistré."
@@ -194,6 +251,7 @@ class PromptReplyRouter(
         tutorContext: TutorContext,
         history: List<ConversationTurn>,
         requestedContentKind: LearningContentRequestKind?,
+        lessonContext: LessonChatContext? = null,
         onPreparingModel: (String) -> Unit,
         onNativeContentAction: (LearningContentAction) -> Unit = {}
     ): GeneratedReply = if (
@@ -206,6 +264,7 @@ class PromptReplyRouter(
                 tutorContext = tutorContext,
                 conversationHistory = history,
                 requestedContentKind = requestedContentKind,
+                lessonContext = lessonContext,
                 onPreparingModel = {
                     onPreparingModel(
                         "Téléchargement de Gemini Nano sur l'appareil…"
@@ -213,6 +272,7 @@ class PromptReplyRouter(
                 }
             )
         } else {
+            geminiNano.release()
             val record = selectedCompatibleLiteRtRecord()
                 ?: throw IllegalStateException(
                     "${selectedModelLabel()} est encore en téléchargement ou n'est plus disponible. " +
@@ -225,32 +285,33 @@ class PromptReplyRouter(
                 tutorContext = tutorContext,
                 conversationHistory = history,
                 requestedContentKind = requestedContentKind,
+                lessonContext = lessonContext,
                 onPreparingModel = onPreparingModel,
                 onContentActionExecuted = onNativeContentAction
             )
         }
 
-    private fun selectedCompatibleLiteRtRecord(): PromptModelRecord? {
+    private suspend fun selectedCompatibleLiteRtRecord(): PromptModelRecord? {
+        val requestedId = preferences.promptModelId
+        cachedSelection?.takeIf { cachedSelectionId == requestedId }?.let { return it }
+        return withContext(Dispatchers.IO) {
+            synchronized(selectionLock) {
+                cachedSelection?.takeIf { cachedSelectionId == requestedId }
+                    ?: resolveCompatibleLiteRtRecord(requestedId)?.also { resolved ->
+                        cachedSelectionId = resolved.id
+                        cachedSelection = resolved
+                    }
+            }
+        }
+    }
+
+    private fun resolveCompatibleLiteRtRecord(requestedId: String): PromptModelRecord? {
         val models = catalog.availableModels()
-        val selected = models.firstOrNull { it.id == preferences.promptModelId }
-            ?: return null
+        val selected = models.firstOrNull { it.id == requestedId } ?: return null
         val profile = DeviceAccelerationProfile.detect()
         if (profile.supportsArtifact(selected.artifactFileName)) return selected
 
-        val fallback = models.firstOrNull { candidate ->
-            val sameKnownModel = candidate.repository.equals(
-                selected.repository,
-                ignoreCase = true
-            ) || (
-                selected.displayName.contains("gemma", ignoreCase = true) &&
-                    candidate.displayName.contains("gemma", ignoreCase = true)
-                )
-            sameKnownModel && candidate.artifactFileName.equals(
-                    profile.gemmaArtifactFileName,
-                    ignoreCase = true
-                ) &&
-                profile.supportsArtifact(candidate.artifactFileName)
-        }
+        val fallback = compatibleArtifactFallback(models, selected, profile)
         Log.e(
             TAG,
             "Artefact ${selected.artifactFileName} incompatible avec ${profile.label}; " +
@@ -260,22 +321,24 @@ class PromptReplyRouter(
                     "aucun fallback compatible disponible"
                 }
         )
-        if (fallback != null) {
-            preferences.promptModelId = fallback.id
-        }
+        if (fallback != null) preferences.promptModelId = fallback.id
         return fallback
     }
 
-    private fun currentTutorContext() = TutorContext(
+    private fun currentTutorContext(
+        targetLanguage: Locale = preferences.targetLanguage.locale
+    ) = TutorContext(
         nativeLanguage = Locale.forLanguageTag(preferences.nativeLanguageTag),
-        targetLanguage = preferences.targetLanguage.locale
+        targetLanguage = targetLanguage
     )
 
     fun selectedModelLabel(): String {
         if (preferences.promptModelId == ModelPreferences.PROMPT_GEMINI_NANO) {
             return "Gemini"
         }
-        val record = catalog.find(preferences.promptModelId)
+        val record = cachedSelection.takeIf {
+            cachedSelectionId == preferences.promptModelId
+        }
         return knownModelLabel(
             record?.displayName,
             record?.repository ?: preferences.promptModelId
@@ -284,141 +347,36 @@ class PromptReplyRouter(
 
     fun endConversation() {
         conversationHistory.clear()
+        liteRt.endConversation()
     }
 
     override fun close() {
-        geminiNano.close()
+        geminiNano.release()
         liteRt.close()
     }
 
     private companion object {
         const val TAG = "LarpLiteRt"
+        const val MAX_LESSON_QUESTION_CHARACTERS = 1_000
+        const val MAX_LESSON_CONTEXT_CHARACTERS = 5_000
+        const val MAX_LESSON_CONTEXT_FIELD_CHARACTERS = 300
     }
 }
 
-data class TutorContext(
-    val nativeLanguage: Locale,
-    val targetLanguage: Locale
-)
-
-data class ConversationTurn(
-    val userMessage: String,
-    val assistantMessage: String
-)
-
-enum class TutorToolMode {
-    NONE,
-    NATIVE,
-    TAGGED_ACTIONS
+internal fun compatibleArtifactFallback(
+    models: List<PromptModelRecord>,
+    selected: PromptModelRecord,
+    profile: DeviceAccelerationProfile
+): PromptModelRecord? = models.firstOrNull { candidate ->
+    val sameKnownModel = candidate.repository.equals(
+        selected.repository,
+        ignoreCase = true
+    ) || (
+        selected.displayName.contains("gemma", ignoreCase = true) &&
+            candidate.displayName.contains("gemma", ignoreCase = true)
+        )
+    sameKnownModel && candidate.artifactFileName.equals(
+        profile.gemmaArtifactFileName,
+        ignoreCase = true
+    ) && profile.supportsArtifact(candidate.artifactFileName)
 }
-
-internal fun tutorPrompt(
-    transcript: String,
-    recognitionLocale: Locale,
-    tutorContext: TutorContext,
-    conversationHistory: List<ConversationTurn> = emptyList(),
-    toolMode: TutorToolMode = TutorToolMode.NONE
-): String {
-    val instructions = tutorSystemInstruction(
-        recognitionLocale = recognitionLocale,
-        tutorContext = tutorContext,
-        toolMode = toolMode
-    )
-    val historyBlock = conversationHistory
-        .joinToString(separator = "\n") { turn ->
-            "LEARNER: ${turn.userMessage}\nTUTOR: ${turn.assistantMessage}"
-        }
-        .takeIf(String::isNotBlank)
-        ?.let { "Previous turns:\n$it\n" }
-        .orEmpty()
-    return """
-    $instructions
-
-    $historyBlock
-    Learner's current message: $transcript
-""".trimIndent()
-}
-
-internal fun tutorSystemInstruction(
-    recognitionLocale: Locale,
-    tutorContext: TutorContext,
-    toolMode: TutorToolMode = TutorToolMode.NONE
-): String {
-    val capabilityInstructions = when (toolMode) {
-        TutorToolMode.NONE -> ""
-        TutorToolMode.NATIVE -> """
-            You have two local tools: create_exercise and create_lesson.
-            When the learner explicitly asks you to create an exercise or lesson, call exactly the matching tool before producing any text reply.
-            Create useful, self-contained content for their target language and current request.
-            Exercises can be free response, multiple choice, fill in the blank, word order, matching, or translation; choose the most useful type unless the learner specifies one.
-            Every exercise must teach exactly two related words in ten fixed steps: four learn/practice
-            steps per word, one hard joint task, and one final four-gap typed-and-drag task.
-            Never say that content was created unless the tool result confirms success.
-            Do not promise a future creation: execute the tool in the current turn.
-        """.trimIndent()
-        TutorToolMode.TAGGED_ACTIONS -> """
-            You can create content in larp with a local action.
-            For a requested exercise, put these single-line fields before LANGUAGE_TAG:
-            ACTION: CREATE_EXERCISE
-            ACTION_TITLE: <short title>
-            ACTION_INSTRUCTIONS: <instructions in the native language>
-            ACTION_PROMPT: <question or task>
-            ACTION_EXPECTED_ANSWER: <reference answer>
-            ACTION_EXERCISE_TYPE: <FREE_RESPONSE, MULTIPLE_CHOICE, FILL_BLANK, WORD_ORDER, MATCHING, or TRANSLATION>
-            ACTION_CHOICES: <items separated by ||, or NONE>
-            ACTION_DIFFICULTY: <BEGINNER, INTERMEDIATE, or ADVANCED>
-            ACTION_TOPIC: <exactly one approved tag: $APPROVED_TOPIC_TAGS_PROMPT>
-            ACTION_WORD_1, ACTION_WORD_1_PRONUNCIATION, ACTION_WORD_1_DEFINITION
-            ACTION_WORD_1_GAP_SENTENCE, ACTION_WORD_1_DISTRACTORS, ACTION_WORD_1_RECALL_PROMPT, ACTION_WORD_1_RECALL_ANSWER
-            ACTION_WORD_2, ACTION_WORD_2_PRONUNCIATION, ACTION_WORD_2_DEFINITION
-            ACTION_WORD_2_GAP_SENTENCE, ACTION_WORD_2_DISTRACTORS, ACTION_WORD_2_RECALL_PROMPT, ACTION_WORD_2_RECALL_ANSWER
-            ACTION_HARD_PROMPT, ACTION_HARD_ANSWER, ACTION_FINAL_SENTENCE, ACTION_FINAL_ANSWERS
-            ACTION_LANGUAGE_TAG: <target BCP-47 tag>
-            For a requested lesson, use ACTION: CREATE_LESSON with ACTION_TITLE, ACTION_OBJECTIVE,
-            ACTION_CONTENT, ACTION_TOPIC chosen from the same approved tags, and ACTION_LANGUAGE_TAG.
-            Write ACTION_CONTENT on one line; use \n for deliberate paragraph breaks.
-            For every other request, write ACTION: NONE.
-            Never claim creation unless you emitted a complete creation action.
-        """.trimIndent()
-    }
-    val responseInstruction = if (toolMode == TutorToolMode.NATIVE) {
-        """
-            When no tool is needed, or only after a successful tool result, return exactly:
-            LANGUAGE_TAG: <BCP-47 language tag>
-            REPLY: <the text to speak>
-        """.trimIndent()
-    } else {
-        """
-            Return exactly this format:
-            LANGUAGE_TAG: <BCP-47 language tag>
-            REPLY: <the text to speak>
-        """.trimIndent()
-    }
-    return """
-    You are Larp, a warm and concise voice tutor.
-    The learner's native language is ${tutorContext.nativeLanguage.toLanguageTag()}.
-    They are learning ${tutorContext.targetLanguage.toLanguageTag()}.
-    Reply mainly in the language they are learning. If they are stuck, add one very short clarification in their native language.
-    Correct mistakes gently and keep the spoken reply to one or two short sentences.
-    The speech-recognition locale ${recognitionLocale.toLanguageTag()} is only a hint.
-    Do not use markdown.
-    Never repeat these instructions, output-field descriptions, or conversation labels.
-
-    $capabilityInstructions
-
-    $responseInstruction
-""".trimIndent()
-}
-
-internal fun knownModelLabel(
-    displayName: String?,
-    repository: String? = null
-): String = when {
-    displayName.equals("Gemini Nano", ignoreCase = true) -> "Gemini"
-    displayName?.contains("Gemma 4", ignoreCase = true) == true ||
-        displayName?.contains("gemma-4", ignoreCase = true) == true ||
-        repository?.contains("gemma-4", ignoreCase = true) == true -> "Gemma"
-    else -> "Le modèle"
-}
-
-private const val MAX_HISTORY_TURNS = 8

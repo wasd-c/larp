@@ -10,14 +10,9 @@ import com.anis.larp.learning.LearningContentAction
 import com.anis.larp.learning.LearningContentRepository
 import com.anis.larp.learning.Lesson
 import com.anis.larp.learning.YoutubeTranscriptProvider
-import com.google.mlkit.genai.common.DownloadStatus
-import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.common.audio.AudioSource
-import com.google.mlkit.genai.speechrecognition.SpeechRecognition
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizer
-import com.google.mlkit.genai.speechrecognition.SpeechRecognizerOptions
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
-import com.google.mlkit.genai.speechrecognition.speechRecognizerOptions
 import com.google.mlkit.genai.speechrecognition.speechRecognizerRequest
 import java.util.Locale
 import kotlin.random.Random
@@ -58,9 +53,13 @@ class MlKitSpeechRecognizer(
     private val youtubeTranscriptProvider = YoutubeTranscriptProvider()
     private val mutableState = MutableStateFlow(
         FreeModeUiState(
-            locale = speechRecognitionLocaleFor(preferences.nativeLanguageTag)
+            locale = speechRecognitionLocaleFor(preferences.nativeLanguageTag),
+            targetLocale = preferences.targetLanguage.locale
         )
     )
+    private val mlKitRecognizerProvider = MlKitRecognizerProvider { message ->
+        mutableState.update { it.copy(statusMessage = message) }
+    }
     private var recognitionJob: Job? = null
     private var silenceJob: Job? = null
     private var restartJob: Job? = null
@@ -84,35 +83,77 @@ class MlKitSpeechRecognizer(
                 message = "$modelLabel se prépare en arrière-plan…",
                 modelLabel = modelLabel
             )
-            runCatching {
+            mutableState.update {
+                it.copy(
+                    modelsReady = false,
+                    modelReadinessError = null,
+                    targetLocale = preferences.targetLanguage.locale
+                )
+            }
+            try {
                 if (preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR) {
                     qwenSpeechRecognizer.preload { message ->
                         updateIdleStatus(message, modelLabel)
                     }
+                } else {
+                    qwenSpeechRecognizer.release()
+                    val locale = speechRecognitionLocaleFor(preferences.nativeLanguageTag)
+                    val selected = mlKitRecognizerProvider.select(
+                        locale,
+                        preferences.sttModelId
+                    ) ?: throw IllegalStateException(
+                        "Le modèle de reconnaissance vocale sélectionné n'est pas disponible."
+                    )
+                    selected.recognizer.close()
                 }
-                replyGenerator.preloadSelectedModel { message ->
+                preferences.ttsVoiceName?.let { selectedVoice ->
+                    updateIdleStatus("Préparation de la voix hors ligne…", modelLabel)
+                    speechSynthesizer.preload(
+                        requestedLocale = preferences.targetLanguage.locale,
+                        selectedVoiceName = selectedVoice
+                    )
+                }
+                val readyMessage = replyGenerator.preloadSelectedModel { message ->
                     updateIdleStatus(message, modelLabel)
-                }
-            }.onSuccess { readyMessage ->
+                } ?: throw IllegalStateException(
+                    "$modelLabel n'est pas encore téléchargé."
+                )
                 sessionStore.recordModelReady(modelLabel, readyMessage)
                 updateIdleStatus(
-                    message = readyMessage
-                        ?: "$modelLabel sera chargé dès que son téléchargement sera terminé.",
+                    message = readyMessage,
                     modelLabel = modelLabel
                 )
-            }.onFailure { error ->
+                mutableState.update {
+                    it.copy(modelsReady = true, modelReadinessError = null)
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
                 sessionStore.recordError("model_preload", error)
                 updateIdleStatus(
                     message = error.message
                         ?: "$modelLabel n'a pas pu être préparé.",
                     modelLabel = modelLabel
                 )
+                mutableState.update {
+                    it.copy(
+                        modelsReady = false,
+                        modelReadinessError = error.message
+                            ?: "Les modèles sélectionnés n'ont pas pu être préparés."
+                    )
+                }
             }
         }
     }
 
     fun dismissCreatedContent() {
         mutableState.update { it.copy(createdContent = null) }
+    }
+
+    fun submitTextMessage(message: String) {
+        val cleanMessage = message.trim().take(MAX_TEXT_MESSAGE_CHARACTERS)
+        if (cleanMessage.isBlank() || !mutableState.value.modelsReady) return
+        scope.launch { processTextMessage(cleanMessage) }
     }
 
     suspend fun speakPracticeWord(text: String, languageTag: String) {
@@ -131,7 +172,10 @@ class MlKitSpeechRecognizer(
         if (preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR) {
             return qwenSpeechRecognizer.recognize(locale)
         }
-        val selected = selectRecognizer(locale) ?: throw IllegalStateException(
+        val selected = mlKitRecognizerProvider.select(
+            locale,
+            preferences.sttModelId
+        ) ?: throw IllegalStateException(
             "La reconnaissance vocale sur l'appareil n'est pas disponible pour ${locale.toLanguageTag()}."
         )
         return try {
@@ -175,6 +219,18 @@ class MlKitSpeechRecognizer(
         onPreparingModel: (String) -> Unit = {}
     ) = replyGenerator.remixLesson(lesson, guidance, onPreparingModel)
 
+    suspend fun answerLessonQuestion(
+        lesson: Lesson,
+        question: String,
+        conversationHistory: List<ConversationTurn>,
+        onPreparingModel: (String) -> Unit = {}
+    ): GeneratedReply = replyGenerator.answerLessonQuestion(
+        lesson = lesson,
+        question = question,
+        conversationHistory = conversationHistory,
+        onPreparingModel = onPreparingModel
+    )
+
     suspend fun importExerciseFromText(
         sourceText: String,
         onPreparingModel: (String) -> Unit = {}
@@ -198,6 +254,16 @@ class MlKitSpeechRecognizer(
     }
 
     fun start() {
+        if (!mutableState.value.modelsReady) {
+            mutableState.update {
+                it.copy(
+                    phase = SpeechPhase.PREPARING,
+                    statusMessage = "Les modèles doivent finir de charger avant de commencer."
+                )
+            }
+            preloadSelectedModel()
+            return
+        }
         if (conversationActive) {
             resumeConversation()
             return
@@ -207,7 +273,6 @@ class MlKitSpeechRecognizer(
         sessionStore.beginOrResume(sessionMetadata())
         conversationActive = true
         conversationPaused = false
-        replyGenerator.endConversation()
         startListeningTurn(clearReply = true)
     }
 
@@ -224,6 +289,7 @@ class MlKitSpeechRecognizer(
                 state.copy(
                     phase = SpeechPhase.PREPARING,
                     locale = locale,
+                    targetLocale = preferences.targetLanguage.locale,
                     committedTranscript = "",
                     partialTranscript = "",
                     statusMessage = "Préparation de la reconnaissance vocale…",
@@ -239,7 +305,10 @@ class MlKitSpeechRecognizer(
                     recognizeQwenTurn(locale)
                     return@launch
                 }
-                val selected = selectRecognizer(locale)
+                val selected = mlKitRecognizerProvider.select(
+                    locale,
+                    preferences.sttModelId
+                )
                 if (selected == null) {
                     val error = IllegalStateException(
                         "La reconnaissance vocale sur l'appareil n'est pas disponible pour ${locale.toLanguageTag()}."
@@ -482,6 +551,7 @@ class MlKitSpeechRecognizer(
         preloadJob?.cancel()
         activeRecognizer?.close()
         activeRecognizer = null
+        qwenSpeechRecognizer.release()
         speechSynthesizer.close()
         replyGenerator.close()
         conversationActive = false
@@ -555,7 +625,10 @@ class MlKitSpeechRecognizer(
                 partialTranscript = "",
                 promptModelName = modelLabel,
                 statusMessage = null,
-                thinkingWord = THINKING_WORDS.random(Random.Default)
+                thinkingWord = THINKING_WORDS.random(Random.Default),
+                chatMessages = it.chatMessages.appendChatMessage(
+                    TutorChatMessage(ChatMessageAuthor.LEARNER, transcript)
+                )
             )
         }
 
@@ -580,7 +653,11 @@ class MlKitSpeechRecognizer(
                     promptModelName = generatedReply.modelName,
                     promptAcceleration = generatedReply.acceleration,
                     thinkingWord = null,
-                    statusMessage = "Réponse vocale en ${generatedReply.locale.displayLanguage}"
+                    statusMessage = "Réponse vocale en ${generatedReply.locale.displayLanguage}",
+                    targetLocale = preferences.targetLanguage.locale,
+                    chatMessages = it.chatMessages.appendChatMessage(
+                        TutorChatMessage(ChatMessageAuthor.TUTOR, generatedReply.text)
+                    )
                 )
             }
             sessionStore.recordAssistantReply(
@@ -588,12 +665,12 @@ class MlKitSpeechRecognizer(
                 ttsVoiceName = preferences.ttsVoiceName
             )
             failureStage = "text_to_speech"
-            speechSynthesizer.speak(
+            val spokenVoice = speechSynthesizer.speak(
                 text = generatedReply.text,
                 requestedLocale = generatedReply.locale,
                 selectedVoiceName = preferences.ttsVoiceName
             )
-            sessionStore.recordTtsCompleted(preferences.ttsVoiceName)
+            sessionStore.recordTtsCompleted(spokenVoice.name)
             mutableState.update {
                 it.copy(
                     phase = if (conversationActive && !conversationPaused) {
@@ -637,9 +714,120 @@ class MlKitSpeechRecognizer(
         }
     }
 
+    private suspend fun processTextMessage(message: String) {
+        if (processingUtterance) return
+        processingUtterance = true
+        silenceJob?.cancel()
+        silenceJob = null
+        restartJob?.cancel()
+        restartJob = null
+        val recognizer = activeRecognizer
+        val recognition = recognitionJob
+        recognitionJob = null
+        activeRecognizer = null
+        recognition?.cancel()
+        runCatching { recognizer?.stopRecognition() }
+        recognizer?.close()
+        qwenSpeechRecognizer.cancelRecognition()
+        speechSynthesizer.stop()
+
+        sessionStore.beginOrResume(sessionMetadata())
+        sessionStore.recordUserUtterance(
+            text = message,
+            localeTag = preferences.nativeLanguageTag,
+            recognitionMode = "Texte"
+        )
+        val modelLabel = replyGenerator.selectedModelLabel()
+        mutableState.update {
+            it.copy(
+                phase = SpeechPhase.THINKING,
+                committedTranscript = message,
+                partialTranscript = "",
+                promptModelName = modelLabel,
+                statusMessage = null,
+                thinkingWord = THINKING_WORDS.random(Random.Default),
+                chatMessages = it.chatMessages.appendChatMessage(
+                    TutorChatMessage(ChatMessageAuthor.LEARNER, message)
+                )
+            )
+        }
+
+        var restartVoice = false
+        try {
+            val generatedReply = replyGenerator.generateReply(
+                transcript = message,
+                recognitionLocale = Locale.forLanguageTag(preferences.nativeLanguageTag),
+                onPreparingModel = { preparation ->
+                    mutableState.update { it.copy(statusMessage = preparation) }
+                }
+            )
+            sessionStore.recordAssistantReply(
+                reply = generatedReply,
+                ttsVoiceName = null,
+                delivery = "text"
+            )
+            mutableState.update {
+                it.copy(
+                    phase = if (conversationActive && !conversationPaused) {
+                        SpeechPhase.PREPARING
+                    } else {
+                        SpeechPhase.IDLE
+                    },
+                    aiReply = generatedReply.text,
+                    replyLocale = generatedReply.locale,
+                    promptModelName = generatedReply.modelName,
+                    promptAcceleration = generatedReply.acceleration,
+                    thinkingWord = null,
+                    targetLocale = preferences.targetLanguage.locale,
+                    statusMessage = if (conversationActive && !conversationPaused) {
+                        "Réponse écrite · reprise de l'écoute…"
+                    } else {
+                        "Réponse écrite"
+                    },
+                    chatMessages = it.chatMessages.appendChatMessage(
+                        TutorChatMessage(ChatMessageAuthor.TUTOR, generatedReply.text)
+                    )
+                )
+            }
+            restartVoice = conversationActive && !conversationPaused
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            sessionStore.recordError("text_reply_generation", error)
+            mutableState.update {
+                it.copy(
+                    phase = SpeechPhase.ERROR,
+                    thinkingWord = null,
+                    statusMessage = error.message
+                        ?: "La réponse écrite sur l'appareil a échoué."
+                )
+            }
+        } finally {
+            processingUtterance = false
+        }
+        if (restartVoice && conversationActive && !conversationPaused) {
+            startListeningTurn(clearReply = false)
+        }
+    }
+
     private fun onContentActionExecuted(action: LearningContentAction) {
         sessionStore.recordToolAction(action)
         val createdContent = when (action) {
+            is LearningContentAction.CreateLessonContent -> {
+                val exercise = learningContentRepository.state.value.exercises
+                    .firstOrNull()
+                    ?: return
+                CreatedLearningContent(
+                    id = exercise.id,
+                    kind = CreatedLearningContentKind.EXERCISE,
+                    title = exercise.title,
+                    description = exercise.lessonContent?.targets
+                        ?.joinToString { it.text }
+                        .orEmpty(),
+                    topic = exercise.topic,
+                    difficulty = exercise.difficulty.frenchLabel
+                )
+            }
             is LearningContentAction.CreateExercise -> {
                 val exercise = learningContentRepository.state.value.exercises
                     .firstOrNull()
@@ -669,26 +857,6 @@ class MlKitSpeechRecognizer(
         mutableState.update { it.copy(createdContent = createdContent) }
     }
 
-    private suspend fun selectRecognizer(locale: Locale): SelectedRecognizer? {
-        return when (preferences.sttModelId) {
-            ModelPreferences.STT_ML_KIT_ADVANCED ->
-                selectRequiredRecognizer(
-                    locale = locale,
-                    mode = SpeechRecognizerOptions.Mode.MODE_ADVANCED,
-                    label = "Gemini · avancée"
-                )
-
-            ModelPreferences.STT_ML_KIT_BASIC ->
-                selectRequiredRecognizer(
-                    locale = locale,
-                    mode = SpeechRecognizerOptions.Mode.MODE_BASIC,
-                    label = "Gemini · basique"
-                )
-
-            else -> selectBestRecognizer(locale)
-        }
-    }
-
     private companion object {
         val THINKING_WORDS = listOf(
             "Thinking",
@@ -702,94 +870,8 @@ class MlKitSpeechRecognizer(
             "Contemplating",
             "Flibbertigibbet"
         )
+        const val MAX_TEXT_MESSAGE_CHARACTERS = 2_000
     }
-
-    private suspend fun selectBestRecognizer(locale: Locale): SelectedRecognizer? {
-        val advanced = createRecognizer(locale, SpeechRecognizerOptions.Mode.MODE_ADVANCED)
-        val advancedStatus = runCatching {
-            withTimeout(10_000) { advanced.checkStatus() }
-        }.getOrNull()
-        if (advancedStatus == FeatureStatus.AVAILABLE) {
-            return SelectedRecognizer(advanced, "Gemini · avancée")
-        }
-        advanced.close()
-
-        val basic = createRecognizer(locale, SpeechRecognizerOptions.Mode.MODE_BASIC)
-        return when (withTimeout(10_000) { basic.checkStatus() }) {
-            FeatureStatus.AVAILABLE -> SelectedRecognizer(basic, "Basique")
-            FeatureStatus.DOWNLOADABLE,
-            FeatureStatus.DOWNLOADING -> {
-                mutableState.update {
-                    it.copy(statusMessage = "Téléchargement du modèle vocal sur l'appareil…")
-                }
-                val result = withTimeout(120_000) {
-                    basic.download().first { status ->
-                        status is DownloadStatus.DownloadCompleted ||
-                            status is DownloadStatus.DownloadFailed
-                    }
-                }
-                if (result is DownloadStatus.DownloadCompleted) {
-                    SelectedRecognizer(basic, "Gemini · basique")
-                } else {
-                    basic.close()
-                    throw (result as DownloadStatus.DownloadFailed).e
-                }
-            }
-
-            else -> {
-                basic.close()
-                null
-            }
-        }
-    }
-
-    private suspend fun selectRequiredRecognizer(
-        locale: Locale,
-        mode: Int,
-        label: String
-    ): SelectedRecognizer? {
-        val recognizer = createRecognizer(locale, mode)
-        return when (withTimeout(10_000) { recognizer.checkStatus() }) {
-            FeatureStatus.AVAILABLE -> SelectedRecognizer(recognizer, label)
-            FeatureStatus.DOWNLOADABLE,
-            FeatureStatus.DOWNLOADING -> {
-                mutableState.update {
-                    it.copy(
-                        statusMessage =
-                            "Téléchargement du modèle STT $label sélectionné…"
-                    )
-                }
-                val result = withTimeout(120_000) {
-                    recognizer.download().first { status ->
-                        status is DownloadStatus.DownloadCompleted ||
-                            status is DownloadStatus.DownloadFailed
-                    }
-                }
-                if (result is DownloadStatus.DownloadCompleted) {
-                    SelectedRecognizer(recognizer, label)
-                } else {
-                    recognizer.close()
-                    throw (result as DownloadStatus.DownloadFailed).e
-                }
-            }
-
-            else -> {
-                recognizer.close()
-                throw IllegalStateException(
-                    "Le modèle STT $label sélectionné n'est pas disponible pour " +
-                        locale.toLanguageTag() + "."
-                )
-            }
-        }
-    }
-
-    private fun createRecognizer(locale: Locale, mode: Int): SpeechRecognizer =
-        SpeechRecognition.getClient(
-            speechRecognizerOptions {
-                this.locale = locale
-                preferredMode = mode
-            }
-        )
 
     private fun sessionMetadata(): FreeModeSessionMetadata {
         val appVersion = runCatching {
@@ -810,11 +892,13 @@ class MlKitSpeechRecognizer(
         )
     }
 
-    private data class SelectedRecognizer(
-        val recognizer: SpeechRecognizer,
-        val label: String
-    )
 }
+
+private fun List<TutorChatMessage>.appendChatMessage(
+    message: TutorChatMessage
+): List<TutorChatMessage> = (this + message).takeLast(MAX_VISIBLE_CHAT_MESSAGES)
+
+private const val MAX_VISIBLE_CHAT_MESSAGES = 20
 
 internal fun appendText(existing: String, addition: String): String =
     listOf(existing.trim(), addition.trim())

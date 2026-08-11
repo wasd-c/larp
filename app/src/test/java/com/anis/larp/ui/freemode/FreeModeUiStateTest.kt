@@ -9,12 +9,66 @@ import org.junit.Test
 
 class FreeModeUiStateTest {
     @Test
+    fun frenchSpeechOverridesIncorrectUsLocaleFromModel() {
+        val reply = parseGeneratedReply(
+            rawReply = """
+                LANGUAGE_TAG: en-US
+                REPLY: Je ne peux pas transcrire l'audio car vous n'avez pas fourni de fichier audio.
+            """.trimIndent(),
+            fallbackLocale = Locale.US
+        )
+
+        assertEquals("fr", reply.locale.language)
+        assertEquals("FR", reply.locale.country)
+    }
+
+    @Test
+    fun englishSpeechOverridesIncorrectFrenchLocaleFromModel() {
+        val reply = parseGeneratedReply(
+            rawReply = """
+                LANGUAGE_TAG: fr-FR
+                REPLY: Hello, my name is Ana and I live in Paris.
+            """.trimIndent(),
+            fallbackLocale = Locale.FRANCE
+        )
+
+        assertEquals("en", reply.locale.language)
+    }
+
+    @Test
+    fun shortFrenchReplyUsesFrenchVoiceLocale() {
+        assertEquals(
+            "fr",
+            localeMatchingSpokenText("Merci !", Locale.US).language
+        )
+    }
+
+    @Test
     fun pausedConversationRemainsActiveUntilExplicitlyEnded() {
         assertTrue(
             FreeModeUiState(
                 phase = SpeechPhase.IDLE,
                 conversationActive = true
             ).isActive
+        )
+    }
+
+    @Test
+    fun textComposerWaitsWhileTheModelOrVoiceIsBusy() {
+        assertTrue(FreeModeUiState(modelsReady = true).canSendText)
+        assertEquals(
+            false,
+            FreeModeUiState(
+                modelsReady = true,
+                phase = SpeechPhase.THINKING
+            ).canSendText
+        )
+        assertEquals(
+            false,
+            FreeModeUiState(
+                modelsReady = true,
+                phase = SpeechPhase.SPEAKING
+            ).canSendText
         )
     }
 
@@ -146,148 +200,46 @@ class FreeModeUiStateTest {
     }
 
     @Test
-    fun taggedExerciseActionIsParsedButNotIncludedInSpeech() {
+    fun taggedLessonContentIsParsedButNotIncludedInSpeech() {
         val reply = parseGeneratedReply(
             rawReply = """
-                ACTION: CREATE_EXERCISE
-                ACTION_TITLE: Present simple
-                ACTION_INSTRUCTIONS: Complétez la phrase.
-                ACTION_PROMPT: She ___ to school every day.
-                ACTION_EXPECTED_ANSWER: She goes to school every day.
-                ACTION_EXERCISE_TYPE: FILL_BLANK
-                ACTION_CHOICES: NONE
-                ACTION_DIFFICULTY: BEGINNER
+                ACTION: SUBMIT_LESSON_CONTENT
                 ACTION_TOPIC: Daily routines
-                ACTION_LANGUAGE_TAG: en-US
+                ACTION_TARGETS: goes~va || school~école
+                ACTION_SENTENCES: She goes to school.~Elle va à l'école.~0,1~She/goes/to school
                 LANGUAGE_TAG: fr-FR
                 REPLY: J'ai créé l'exercice dans l'onglet Exercices.
             """.trimIndent(),
-            fallbackLocale = Locale.ENGLISH
+            fallbackLocale = Locale.ENGLISH,
+            contentLanguageTag = "en-US"
         )
 
         assertEquals(
             "J'ai créé l'exercice dans l'onglet Exercices.",
             reply.text
         )
-        val action = reply.contentAction as LearningContentAction.CreateExercise
-        assertEquals("Present simple", action.title)
+        val action = reply.contentAction as LearningContentAction.CreateLessonContent
         assertEquals("en-US", action.languageTag)
-        assertEquals(com.anis.larp.learning.ExerciseType.FILL_BLANK, action.type)
+        assertEquals("Daily routines", action.content.topic)
+        assertEquals(listOf(0, 1), action.content.sentences.single().targetIndexes)
+        assertEquals(listOf("She", "goes", "to school"), action.content.sentences.single().chunks)
+    }
+
+    @Test
+    fun legacyGeneratedExerciseAndLessonProtocolsAreRejected() {
         assertEquals(
-            com.anis.larp.learning.ExerciseDifficulty.BEGINNER,
-            action.difficulty
+            null,
+            parseLearningContentAction(
+                "ACTION: CREATE_EXERCISE\nACTION_TITLE: Legacy",
+                "en-US"
+            )
         )
-        assertEquals("Routine", action.topic)
-    }
-
-    @Test
-    fun taggedMultipleChoiceActionParsesInteractiveChoices() {
-        val action = parseLearningContentAction(
-            rawReply = """
-                ACTION: CREATE_EXERCISE
-                ACTION_TITLE: At the café
-                ACTION_INSTRUCTIONS: Choisissez la réponse polie.
-                ACTION_PROMPT: What would you say when ordering coffee?
-                ACTION_EXPECTED_ANSWER: Could I have a coffee, please?
-                ACTION_EXERCISE_TYPE: MULTIPLE_CHOICE
-                ACTION_CHOICES: Give coffee. || Could I have a coffee, please? || Coffee now.
-                ACTION_LANGUAGE_TAG: en-US
-            """.trimIndent(),
-            fallbackLanguageTag = "en-US"
-        ) as LearningContentAction.CreateExercise
-
         assertEquals(
-            com.anis.larp.learning.ExerciseType.MULTIPLE_CHOICE,
-            action.type
-        )
-        assertEquals(3, action.choices.size)
-        assertTrue(action.choices.contains(action.expectedAnswer))
-    }
-
-    @Test
-    fun olderExerciseActionWithoutInteractiveMetadataStillCreatesFreeResponse() {
-        val action = parseLearningContentAction(
-            rawReply = """
-                ACTION: CREATE_EXERCISE
-                ACTION_TITLE: At the shop
-                ACTION_INSTRUCTIONS: Répondez au commerçant.
-                ACTION_PROMPT: Ask politely for a blue shirt.
-                ACTION_EXPECTED_ANSWER: Do you have this shirt in blue, please?
-                ACTION_LANGUAGE_TAG: en-US
-            """.trimIndent(),
-            fallbackLanguageTag = "en-US"
-        ) as LearningContentAction.CreateExercise
-
-        assertEquals(com.anis.larp.learning.ExerciseType.FREE_RESPONSE, action.type)
-        assertTrue(action.choices.isEmpty())
-    }
-
-    @Test
-    fun multipleChoiceAddsReferenceAnswerWhenModelFormatsItSeparately() {
-        val action = parseLearningContentAction(
-            rawReply = """
-                ACTION: CREATE_EXERCISE
-                ACTION_TITLE: Polite shopping
-                ACTION_INSTRUCTIONS: Choisissez la phrase polie.
-                ACTION_PROMPT: Which sentence is polite?
-                ACTION_EXPECTED_ANSWER: Could I try this on, please?
-                ACTION_EXERCISE_TYPE: multiple choice
-                ACTION_CHOICES: ["I try this.", "Give it to me."]
-                ACTION_LANGUAGE_TAG: en-US
-            """.trimIndent(),
-            fallbackLanguageTag = "en-US"
-        ) as LearningContentAction.CreateExercise
-
-        assertEquals(com.anis.larp.learning.ExerciseType.MULTIPLE_CHOICE, action.type)
-        assertTrue(action.choices.contains(action.expectedAnswer))
-    }
-
-    @Test
-    fun taggedLessonActionSupportsEscapedParagraphs() {
-        val reply = parseGeneratedReply(
-            rawReply = """
-                ACTION: CREATE_LESSON
-                ACTION_TITLE: Greetings
-                ACTION_OBJECTIVE: Greet someone naturally.
-                ACTION_CONTENT: Hello means bonjour.\\nGood evening means bonsoir.
-                ACTION_LANGUAGE_TAG: en-US
-                LANGUAGE_TAG: fr-FR
-                REPLY: La leçon est prête.
-            """.trimIndent(),
-            fallbackLocale = Locale.ENGLISH
-        )
-
-        val action = reply.contentAction as LearningContentAction.CreateLesson
-        assertEquals(
-            "Hello means bonjour.\nGood evening means bonsoir.",
-            action.content
-        )
-    }
-
-    @Test
-    fun taggedLessonActionSupportsNaturalMultilineContent() {
-        val reply = parseGeneratedReply(
-            rawReply = """
-                ACTION: CREATE_LESSON
-                ACTION_TITLE: Greeting a shopkeeper
-                ACTION_OBJECTIVE: Savoir saluer et demander un produit.
-                ACTION_CONTENT: Start by saying “Hello”.
-                Ask politely: “Do you have this in blue?”
-
-                Finish with “Thank you, goodbye.”
-                ACTION_LANGUAGE_TAG: en-US
-                LANGUAGE_TAG: fr-FR
-                REPLY: La leçon est prête.
-            """.trimIndent(),
-            fallbackLocale = Locale.ENGLISH
-        )
-
-        val action = reply.contentAction as LearningContentAction.CreateLesson
-        assertEquals(
-            "Start by saying “Hello”.\n" +
-                "Ask politely: “Do you have this in blue?”\n\n" +
-                "Finish with “Thank you, goodbye.”",
-            action.content
+            null,
+            parseLearningContentAction(
+                "ACTION: CREATE_LESSON\nACTION_TITLE: Legacy",
+                "en-US"
+            )
         )
     }
 }

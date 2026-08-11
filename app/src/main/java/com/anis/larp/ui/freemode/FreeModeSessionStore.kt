@@ -78,20 +78,39 @@ class FreeModeSessionStore(
         )
     }
 
-    fun recordAssistantReply(reply: GeneratedReply, ttsVoiceName: String?) {
+    fun recordAssistantReply(
+        reply: GeneratedReply,
+        ttsVoiceName: String?,
+        delivery: String = "voice"
+    ) {
         appendToActive(
             event("assistant_reply")
                 .put("text", reply.text)
                 .put("locale", reply.locale.toLanguageTag())
                 .put("model", reply.modelName)
                 .put("acceleration", reply.acceleration)
-                .put("ttsVoice", ttsVoiceName ?: "automatic_offline")
+                .put("delivery", delivery)
+                .put(
+                    "ttsVoice",
+                    if (delivery == "voice") {
+                        ttsVoiceName ?: "automatic_offline"
+                    } else {
+                        JSONObject.NULL
+                    }
+                )
         )
     }
 
     fun recordToolAction(action: LearningContentAction) {
         val payload = event("tool_action")
         when (action) {
+            is LearningContentAction.CreateLessonContent -> payload
+                .put("tool", "submit_lesson_content")
+                .put("topic", action.content.topic)
+                .put("targetCount", action.content.targets.size)
+                .put("sentenceCount", action.content.sentences.size)
+                .put("languageTag", action.languageTag)
+
             is LearningContentAction.CreateExercise -> payload
                 .put("tool", "create_exercise")
                 .put("title", action.title)

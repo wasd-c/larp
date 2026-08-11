@@ -50,8 +50,15 @@ data class Exercise(
     val difficulty: ExerciseDifficulty = ExerciseDifficulty.INTERMEDIATE,
     val topic: String = "Culture",
     val plan: ExercisePlan = fallbackExercisePlan(prompt, expectedAnswer, choices),
+    val lessonContent: LessonContent? = null,
+    val lessonConfiguration: LessonConfiguration = LessonConfiguration(),
     val completion: ExerciseCompletion? = null
-)
+) {
+    val compiledSteps: List<LessonStep>
+        get() = lessonContent?.let {
+            DeterministicLessonCompiler().compile(it, lessonConfiguration)
+        }.orEmpty()
+}
 
 data class Lesson(
     val id: String,
@@ -70,6 +77,14 @@ data class LearningContentState(
 )
 
 sealed interface LearningContentAction {
+    data class CreateLessonContent(
+        val content: LessonContent,
+        val languageTag: String,
+        val difficulty: LessonDifficulty = LessonDifficulty.BEGINNER,
+        val desiredStepCount: Int = 10
+    ) : LearningContentAction
+
+    @Deprecated("Generated exercises now use CreateLessonContent")
     data class CreateExercise(
         val title: String,
         val instructions: String,
@@ -101,6 +116,24 @@ class LearningContentRepository private constructor(
     private val mutableState = MutableStateFlow(readContent())
 
     val state: StateFlow<LearningContentState> = mutableState.asStateFlow()
+
+    fun enforceLearningLanguage(languageTag: String) = synchronized(FILE_LOCK) {
+        val normalized = normalizeLanguageTag(languageTag)
+        val updated = mutableState.value.copy(
+            exercises = mutableState.value.exercises.map { exercise ->
+                if (exercise.languageTag == normalized) exercise
+                else exercise.copy(languageTag = normalized)
+            },
+            lessons = mutableState.value.lessons.map { lesson ->
+                if (lesson.languageTag == normalized) lesson
+                else lesson.copy(languageTag = normalized)
+            }
+        )
+        if (updated != mutableState.value) {
+            persist(updated)
+            mutableState.value = updated
+        }
+    }
 
     fun createExercise(
         title: String,
@@ -157,6 +190,49 @@ class LearningContentRepository private constructor(
                 choices = cleanedChoices
             )
         )
+        val updated = mutableState.value.copy(
+            exercises = listOf(exercise) + mutableState.value.exercises
+        )
+        persist(updated)
+        mutableState.value = updated
+        exercise
+    }
+
+    fun createLessonContent(
+        requestedContent: LessonContent,
+        languageTag: String,
+        difficulty: LessonDifficulty = LessonDifficulty.BEGINNER,
+        desiredStepCount: Int = 10
+    ): Exercise = synchronized(FILE_LOCK) {
+        val validator = LessonContentValidator()
+        val content = validator.repair(requestedContent, languageTag)
+        val validation = validator.validate(content, languageTag)
+        require(validation is LessonContentValidation.Valid) {
+            (validation as LessonContentValidation.Invalid).reasons.joinToString("; ")
+        }
+        val configuration = LessonConfiguration(
+            desiredStepCount = desiredStepCount,
+            difficulty = difficulty,
+            seed = stableLessonSeed(content)
+        )
+        val steps = DeterministicLessonCompiler().compile(content, configuration)
+        val firstSentence = content.sentences.first()
+        val exercise = Exercise(
+            id = "exercise:${UUID.randomUUID()}",
+            title = clean(content.topic, MAX_TITLE_LENGTH, "Nouvelle leçon"),
+            instructions = "",
+            prompt = firstSentence.meaning,
+            expectedAnswer = firstSentence.text,
+            languageTag = normalizeLanguageTag(languageTag),
+            createdAtMillis = System.currentTimeMillis(),
+            type = ExerciseType.TRANSLATION,
+            choices = emptyList(),
+            difficulty = difficulty.toLegacyDifficulty(),
+            topic = LearningTopics.choose(content.topic, content.topic),
+            lessonContent = content,
+            lessonConfiguration = configuration
+        )
+        check(steps.isNotEmpty()) { "The local compiler produced no lesson steps" }
         val updated = mutableState.value.copy(
             exercises = listOf(exercise) + mutableState.value.exercises
         )
@@ -276,6 +352,12 @@ class LearningContentRepository private constructor(
 
     fun execute(action: LearningContentAction) {
         when (action) {
+            is LearningContentAction.CreateLessonContent -> createLessonContent(
+                requestedContent = action.content,
+                languageTag = action.languageTag,
+                difficulty = action.difficulty,
+                desiredStepCount = action.desiredStepCount
+            )
             is LearningContentAction.CreateExercise -> createExercise(
                 title = action.title,
                 instructions = action.instructions,
@@ -329,6 +411,13 @@ class LearningContentRepository private constructor(
                                 .put(KEY_DIFFICULTY, exercise.difficulty.wireValue)
                                 .put(KEY_TOPIC, exercise.topic)
                                 .put(KEY_PLAN, exercise.plan.toJson())
+                                .put(
+                                    KEY_LESSON_CONTENT,
+                                    exercise.lessonContent?.let(LessonContentCodec::encode)
+                                        ?: JSONObject.NULL
+                                )
+                                .put(KEY_LESSON_STEP_COUNT, exercise.lessonConfiguration.desiredStepCount)
+                                .put(KEY_LESSON_SEED, exercise.lessonConfiguration.seed)
                                 .put(
                                     KEY_COMPLETION,
                                     exercise.completion?.toJson() ?: JSONObject.NULL
@@ -417,6 +506,16 @@ class LearningContentRepository private constructor(
                         prompt = item.getString(KEY_PROMPT),
                         expectedAnswer = item.getString(KEY_EXPECTED_ANSWER),
                         choices = item.optJSONArray(KEY_CHOICES).toStrings()
+                    ),
+                    lessonContent = item.optString(KEY_LESSON_CONTENT)
+                        .takeIf(String::isNotBlank)
+                        ?.let { encoded -> runCatching { LessonContentCodec.decode(encoded) }.getOrNull() },
+                    lessonConfiguration = LessonConfiguration(
+                        desiredStepCount = item.optInt(KEY_LESSON_STEP_COUNT, 10),
+                        difficulty = ExerciseDifficulty.fromWireValue(
+                            item.optString(KEY_DIFFICULTY)
+                        ).toLessonDifficulty(),
+                        seed = item.optLong(KEY_LESSON_SEED, 0L)
                     ),
                     completion = item.optJSONObject(KEY_COMPLETION)?.toExerciseCompletion()
                 )
@@ -561,6 +660,9 @@ class LearningContentRepository private constructor(
         private const val KEY_DIFFICULTY = "difficulty"
         private const val KEY_TOPIC = "topic"
         private const val KEY_PLAN = "plan"
+        private const val KEY_LESSON_CONTENT = "lessonContent"
+        private const val KEY_LESSON_STEP_COUNT = "lessonStepCount"
+        private const val KEY_LESSON_SEED = "lessonSeed"
         private const val KEY_COMPLETION = "completion"
         private const val KEY_WORDS = "words"
         private const val KEY_TEXT = "text"
@@ -629,6 +731,23 @@ fun decodeExerciseChoices(value: String?): List<String> {
         .map(String::trim)
         .filter { it.isNotBlank() && !it.equals("NONE", ignoreCase = true) }
 }
+
+private fun LessonDifficulty.toLegacyDifficulty(): ExerciseDifficulty = when (this) {
+    LessonDifficulty.BEGINNER -> ExerciseDifficulty.BEGINNER
+    LessonDifficulty.INTERMEDIATE -> ExerciseDifficulty.INTERMEDIATE
+    LessonDifficulty.ADVANCED -> ExerciseDifficulty.ADVANCED
+}
+
+private fun ExerciseDifficulty.toLessonDifficulty(): LessonDifficulty = when (this) {
+    ExerciseDifficulty.BEGINNER -> LessonDifficulty.BEGINNER
+    ExerciseDifficulty.INTERMEDIATE -> LessonDifficulty.INTERMEDIATE
+    ExerciseDifficulty.ADVANCED -> LessonDifficulty.ADVANCED
+}
+
+private fun stableLessonSeed(content: LessonContent): Long =
+    LessonContentCodec.encode(content).fold(1_125_899_906_842_597L) { hash, character ->
+        hash * 31L + character.code
+    }
 
 fun requireExerciseType(value: String): ExerciseType = ExerciseType.entries
     .firstOrNull {

@@ -33,7 +33,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -43,6 +45,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.Article
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.FitnessCenter
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -63,6 +66,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MaterialTheme.motionScheme
@@ -97,11 +101,16 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.Lesson
+import com.anis.larp.ui.freemode.ChatMessageAuthor
+import com.anis.larp.ui.freemode.ConversationTurn
+import com.anis.larp.ui.freemode.GeneratedReply
+import com.anis.larp.ui.freemode.TutorChatMessage
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -227,7 +236,15 @@ fun LessonsScreen(
     requestedOpenId: String? = null,
     onRequestedOpenHandled: () -> Unit = {},
     onArchive: (Lesson) -> Unit = {},
-    onRemix: suspend (Lesson, String) -> Unit = { _, _ -> }
+    onRemix: suspend (Lesson, String) -> Unit = { _, _ -> },
+    onAskQuestion: suspend (
+        Lesson,
+        String,
+        List<ConversationTurn>,
+        (String) -> Unit
+    ) -> GeneratedReply = { _, _, _, _ ->
+        throw IllegalStateException("Le professeur n'est pas disponible.")
+    }
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var remixId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -272,7 +289,8 @@ fun LessonsScreen(
                     topicFilter = topic
                     searchRevealState.show()
                     selectedId = null
-                }
+                },
+                onAskQuestion = onAskQuestion
             )
         } else {
             LessonLibrary(
@@ -1173,8 +1191,56 @@ internal fun UnsavedExerciseExitDialog(
 private fun LessonDetail(
     lesson: Lesson,
     onBack: () -> Unit,
-    onTopicFilterRequested: (String) -> Unit
+    onTopicFilterRequested: (String) -> Unit,
+    onAskQuestion: suspend (
+        Lesson,
+        String,
+        List<ConversationTurn>,
+        (String) -> Unit
+    ) -> GeneratedReply
 ) {
+    var conversation by remember(lesson.id) {
+        mutableStateOf<List<ConversationTurn>>(emptyList())
+    }
+    var pendingQuestion by remember(lesson.id) { mutableStateOf<String?>(null) }
+    var draft by rememberSaveable(lesson.id) { mutableStateOf("") }
+    var preparationMessage by remember(lesson.id) { mutableStateOf<String?>(null) }
+    var errorMessage by remember(lesson.id) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val chatActive = conversation.isNotEmpty() || pendingQuestion != null
+
+    fun sendQuestion() {
+        val question = draft.trim()
+        if (question.isBlank() || pendingQuestion != null) return
+        val previousTurns = conversation
+        draft = ""
+        pendingQuestion = question
+        preparationMessage = "Le professeur relit la leçon…"
+        errorMessage = null
+        scope.launch {
+            runCatching {
+                onAskQuestion(
+                    lesson,
+                    question,
+                    previousTurns
+                ) { preparationMessage = it }
+            }.onSuccess { reply ->
+                conversation = previousTurns + ConversationTurn(
+                    userMessage = question,
+                    assistantMessage = reply.text
+                )
+                pendingQuestion = null
+                preparationMessage = null
+            }.onFailure { error ->
+                draft = question
+                pendingQuestion = null
+                preparationMessage = null
+                errorMessage = error.message
+                    ?: "La réponse à cette question a échoué."
+            }
+        }
+    }
+
     ContentDetailSurface(
         title = lesson.title,
         languageTag = lesson.languageTag,
@@ -1186,8 +1252,161 @@ private fun LessonDetail(
                 label = { Text(lesson.topic) }
             )
         }
-        item { DetailSection("Objectif", lesson.objective, emphasized = true) }
-        item { DetailSection("Leçon", lesson.content) }
+        if (!chatActive) {
+            item { DetailSection("Objectif", lesson.objective, emphasized = true) }
+            item { DetailSection("Leçon", lesson.content) }
+        } else {
+            item {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        Text(
+                            text = "Discussion sur la leçon",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                        Text(
+                            text = lesson.objective,
+                            modifier = Modifier.padding(top = 6.dp),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            }
+            items(conversation) { turn ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LessonChatBubble(
+                        TutorChatMessage(ChatMessageAuthor.LEARNER, turn.userMessage)
+                    )
+                    LessonChatBubble(
+                        TutorChatMessage(ChatMessageAuthor.TUTOR, turn.assistantMessage)
+                    )
+                }
+            }
+            pendingQuestion?.let { question ->
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        LessonChatBubble(
+                            TutorChatMessage(ChatMessageAuthor.LEARNER, question)
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = preparationMessage ?: "larp réfléchit…",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            LessonQuestionComposer(
+                value = draft,
+                onValueChange = {
+                    draft = it.take(MAX_LESSON_QUESTION_LENGTH)
+                    errorMessage = null
+                },
+                enabled = pendingQuestion == null,
+                errorMessage = errorMessage,
+                onSend = ::sendQuestion
+            )
+        }
+    }
+}
+
+@Composable
+private fun LessonChatBubble(message: TutorChatMessage) {
+    val learner = message.author == ChatMessageAuthor.LEARNER
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (learner) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = 340.dp),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = if (learner) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            }
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Text(
+                    text = if (learner) "Vous" else "larp",
+                    color = if (learner) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Text(
+                    text = message.text,
+                    modifier = Modifier.padding(top = 3.dp),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LessonQuestionComposer(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean,
+    errorMessage: String?,
+    onSend: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "Une question sur cette leçon ?",
+            color = MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.titleMedium
+        )
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("lesson_question_input"),
+            enabled = enabled,
+            shape = MaterialTheme.shapes.extraLarge,
+            placeholder = { Text("Demandez une explication ou un exemple…") },
+            maxLines = 4,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardActions = KeyboardActions(onSend = { onSend() }),
+            trailingIcon = {
+                IconButton(
+                    onClick = onSend,
+                    enabled = enabled && value.isNotBlank(),
+                    modifier = Modifier.testTag("send_lesson_question")
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.Send,
+                        contentDescription = "Envoyer la question"
+                    )
+                }
+            }
+        )
+        errorMessage?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 }
 
@@ -1487,6 +1706,7 @@ private fun languageName(languageTag: String): String {
 }
 
 private const val MAX_REMIX_PROMPT_LENGTH = 1_000
+private const val MAX_LESSON_QUESTION_LENGTH = 1_000
 private val SEARCH_REVEAL_DRAG_DISTANCE = 112.dp
 private const val SEARCH_REVEAL_THRESHOLD = 0.2f
 private const val MAX_IMPORTED_TEXT_LENGTH = 4_200

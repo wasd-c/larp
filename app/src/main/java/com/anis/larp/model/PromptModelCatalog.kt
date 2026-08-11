@@ -30,8 +30,9 @@ class PromptModelCatalog(private val context: Context) {
     private val sharedStore = SharedModelStore(applicationContext)
 
     fun availableModels(): List<PromptModelRecord> = synchronized(FILE_LOCK) {
+        val persisted = readCatalog()
         val discovered = sharedStore.discoveredRecords()
-        (readCatalog() + discovered)
+        (persisted + discovered)
             .associateBy(PromptModelRecord::id)
             .values
             .map(::normalizeKnownModel)
@@ -44,17 +45,20 @@ class PromptModelCatalog(private val context: Context) {
                 }
             }
             .toList()
-            .also(::writeCatalog)
+            .also { available ->
+                if (available != persisted) writeCatalog(available)
+            }
     }
 
     fun find(modelId: String): PromptModelRecord? =
         availableModels().firstOrNull { it.id == modelId }
 
     fun add(record: PromptModelRecord) = synchronized(FILE_LOCK) {
-        val records = readCatalog()
+        val persisted = readCatalog()
+        val records = persisted
             .filterNot { it.id == record.id }
             .plus(record)
-        writeCatalog(records)
+        if (records != persisted) writeCatalog(records)
     }
 
     private fun isContentUriAccessible(uriString: String): Boolean =

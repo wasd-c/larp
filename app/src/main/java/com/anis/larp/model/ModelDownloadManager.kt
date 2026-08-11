@@ -132,6 +132,10 @@ class ModelDownloadManager(context: Context) {
         )
     }
 
+    fun cancelQwenAsrDownloads() {
+        workManager.cancelAllWorkByTag(QWEN_ASR_DOWNLOAD_TAG)
+    }
+
     data class DownloadRequest(
         val modelId: String,
         val workId: UUID

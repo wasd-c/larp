@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -24,17 +25,20 @@ import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -55,11 +59,13 @@ import androidx.work.WorkManager
 import com.anis.larp.model.DeviceAccelerationProfile
 import com.anis.larp.model.InstalledModelCatalog
 import com.anis.larp.model.InstalledModelOption
+import com.anis.larp.model.LearningLanguage
 import com.anis.larp.model.ModelDownloadManager
 import com.anis.larp.model.ModelDownloadWorker
 import com.anis.larp.model.ModelInventory
 import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
+import com.anis.larp.model.QwenAsrModel
 import com.anis.larp.model.displayNameIn
 import com.anis.larp.ui.freemode.FreeModeSessionStore
 import java.util.Locale
@@ -91,6 +97,12 @@ fun ModelSettingsScreen(
     var loadingError by remember { mutableStateOf<String?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var importingPromptModel by remember { mutableStateOf(false) }
+    var qwenImportExpanded by remember { mutableStateOf(false) }
+    var importingQwenFiles by remember { mutableStateOf(false) }
+    var qwenImportError by remember { mutableStateOf<String?>(null) }
+    var currentTargetLanguage by remember {
+        mutableStateOf(preferences.targetLanguage)
+    }
     val coroutineScope = rememberCoroutineScope()
     val promptModelPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -118,17 +130,38 @@ fun ModelSettingsScreen(
             }
         }
     }
+    val qwenFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            importingQwenFiles = true
+            qwenImportError = null
+            coroutineScope.launch {
+                runCatching {
+                    QwenAsrModel.importArtifacts(context.applicationContext, uris)
+                }.onSuccess {
+                    ModelDownloadManager(context.applicationContext)
+                        .cancelQwenAsrDownloads()
+                    preferences.sttModelId = ModelPreferences.STT_QWEN_3_ASR
+                    refreshKey++
+                }.onFailure { error ->
+                    qwenImportError = error.message ?: "Import des fichiers Qwen impossible."
+                }
+                importingQwenFiles = false
+            }
+        }
+    }
 
     LaunchedEffect(
         refreshKey,
-        preferences.targetLanguage,
+        currentTargetLanguage,
         downloads.map { it.state }
     ) {
         inventory = null
         loadingError = null
         runCatching {
             installedCatalog.load(
-                targetLanguage = preferences.targetLanguage,
+                targetLanguage = currentTargetLanguage,
                 nativeLanguageTag = preferences.nativeLanguageTag
             )
         }.onSuccess {
@@ -169,16 +202,25 @@ fun ModelSettingsScreen(
                 }
                 Column {
                     Text(
-                        text = "Modèles",
+                        text = "Réglages",
                         style = MaterialTheme.typography.headlineMedium
                     )
                     Text(
-                        text = "Voix, conversation et écoute",
+                        text = "Langue, voix, conversation et écoute",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
 
+            LearningLanguageCard(
+                selected = currentTargetLanguage,
+                onSelected = { language ->
+                    currentTargetLanguage = language
+                    preferences.targetLanguage = language
+                    preferences.ttsVoiceName = null
+                    refreshKey++
+                }
+            )
             AccelerationCard()
             ActiveDownloads(downloads)
             SessionHistoryCard(
@@ -191,7 +233,7 @@ fun ModelSettingsScreen(
                     val models = requireNotNull(inventory)
                     ModelSection(
                         title = "TTS · Voix",
-                        description = "Voix hors ligne installées pour ${preferences.targetLanguage.displayName}",
+                        description = "Voix hors ligne installées pour ${currentTargetLanguage.displayName}",
                         icon = Icons.Rounded.RecordVoiceOver,
                         options = models.ttsModels,
                         selectedId = preferences.ttsVoiceName,
@@ -234,6 +276,68 @@ fun ModelSettingsScreen(
                             refreshKey++
                         }
                     )
+                    TextButton(
+                        onClick = { qwenImportExpanded = !qwenImportExpanded },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (qwenImportExpanded) {
+                                "Masquer l'import ASR avancé"
+                            } else {
+                                "Options ASR avancées"
+                            }
+                        )
+                    }
+                    if (qwenImportExpanded) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.extraLarge,
+                            color = MaterialTheme.colorScheme.surfaceContainer
+                        ) {
+                            Column(modifier = Modifier.padding(18.dp)) {
+                                Text(
+                                    text = "Importer Qwen depuis Files",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "Choisissez ensemble le modèle .gguf et son fichier mmproj. Larp les conservera dans Download/Models.",
+                                    modifier = Modifier.padding(top = 6.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                FilledTonalButton(
+                                    onClick = {
+                                        qwenFilePicker.launch(
+                                            arrayOf("application/octet-stream", "*/*")
+                                        )
+                                    },
+                                    enabled = !importingQwenFiles,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 14.dp)
+                                ) {
+                                    if (importingQwenFiles) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+                                    }
+                                    Text(
+                                        "Choisir les deux fichiers",
+                                        modifier = Modifier.padding(start = 8.dp)
+                                    )
+                                }
+                                qwenImportError?.let { error ->
+                                    Text(
+                                        text = error,
+                                        modifier = Modifier.padding(top = 10.dp),
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 loadingError != null -> Surface(
@@ -254,6 +358,58 @@ fun ModelSettingsScreen(
                     horizontalArrangement = Arrangement.Center
                 ) {
                     CircularProgressIndicator()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LearningLanguageCard(
+    selected: LearningLanguage,
+    onSelected: (LearningLanguage) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("learning_language_settings"),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Language, contentDescription = null)
+                Column {
+                    Text(
+                        text = "Langue étudiée",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Langue utilisée par défaut pour Libre et les créations",
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LearningLanguage.entries.forEach { language ->
+                    FilterChip(
+                        selected = language == selected,
+                        onClick = { onSelected(language) },
+                        label = { Text(language.nativeName) },
+                        modifier = Modifier.testTag(
+                            "learning_language_${language.name.lowercase()}"
+                        )
+                    )
                 }
             }
         }

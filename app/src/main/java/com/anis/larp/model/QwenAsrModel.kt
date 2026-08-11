@@ -1,6 +1,9 @@
 package com.anis.larp.model
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,6 +22,59 @@ object QwenAsrModel {
             store.findCompleted(REPOSITORY, artifact)?.sizeBytes?.let { it > 0L } == true
         }
     }
+
+    suspend fun importArtifacts(context: Context, uris: List<Uri>) =
+        withContext(Dispatchers.IO) {
+            require(uris.size == ARTIFACTS.size) {
+                "Sélectionnez exactement le modèle Qwen et son fichier mmproj."
+            }
+            val resolver = context.contentResolver
+            val namedUris = uris.map { uri ->
+                runCatching {
+                    resolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+                val name = resolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }.orEmpty()
+                require(name.endsWith(".gguf", ignoreCase = true)) {
+                    "Sélectionnez uniquement les deux fichiers Qwen au format .gguf."
+                }
+                name to uri
+            }
+            val projectors = namedUris.filter { (name, _) ->
+                name.contains("mmproj", ignoreCase = true)
+            }
+            val models = namedUris.filterNot { (name, _) ->
+                name.contains("mmproj", ignoreCase = true)
+            }
+            require(projectors.size == 1 && models.size == 1) {
+                "La sélection doit contenir un modèle Qwen et un seul fichier mmproj."
+            }
+            val store = SharedModelStore(context)
+            listOf(
+                MODEL_FILE to models.single().second,
+                PROJECTOR_FILE to projectors.single().second
+            ).forEach { (artifact, uri) ->
+                store.importFromUri(
+                    sourceUri = uri,
+                    repository = REPOSITORY,
+                    artifactName = artifact,
+                    displayName = "Qwen ASR"
+                )
+            }
+            check(isAvailable(context)) {
+                "Les deux fichiers Qwen n'ont pas pu être importés."
+            }
+        }
 
     suspend fun materializeForRuntime(context: Context, fileName: String): File =
         withContext(Dispatchers.IO) {

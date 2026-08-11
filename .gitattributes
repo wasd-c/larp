@@ -1,0 +1,4 @@
+.idea export-ignore
+.gradle export-ignore
+local.properties export-ignore
+**/build export-ignore

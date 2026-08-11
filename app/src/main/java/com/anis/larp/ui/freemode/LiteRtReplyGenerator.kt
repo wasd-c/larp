@@ -13,6 +13,7 @@ import com.anis.larp.learning.LearningContentToolSet
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
@@ -33,6 +34,12 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
     private var activeModelKey: String? = null
     private var activeModel: OpenPromptModel? = null
     private var activeBackendLabel: String? = null
+    private var activeMaxTokens = LITERT_NPU_CONTEXT_TOKENS
+    private var activeConversation: Conversation? = null
+    private var activeConversationKey: String? = null
+    private var activeConversationTurns = 0
+    private var conversationalActionExecuted = false
+    private var conversationalActionCallback: (LearningContentAction) -> Unit = {}
 
     suspend fun preload(
         record: PromptModelRecord,
@@ -49,12 +56,14 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
         tutorContext: TutorContext,
         conversationHistory: List<ConversationTurn> = emptyList(),
         requestedContentKind: LearningContentRequestKind? = null,
+        lessonContext: LessonChatContext? = null,
         onPreparingModel: (String) -> Unit,
         onContentActionExecuted: (LearningContentAction) -> Unit = {}
     ): GeneratedReply = withContext(Dispatchers.Default) {
         val engine = getOrInitializeEngine(record, onPreparingModel)
         val modelLabel = knownModelLabel(record.displayName, record.repository)
         val generatedReply = if (requestedContentKind != null) {
+            closeConversation()
             generateRequestedLearningContent(
                 engine = engine,
                 kind = requestedContentKind,
@@ -65,14 +74,47 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                 modelLabel = modelLabel,
                 onContentActionExecuted = onContentActionExecuted
             )
+        } else if (lessonContext != null) {
+            val rawReply = generateRawReply(
+                engine = engine,
+                prompt = transcript,
+                config = ConversationConfig(
+                    systemInstruction = Contents.of(
+                        tutorSystemInstruction(
+                            recognitionLocale = recognitionLocale,
+                            tutorContext = tutorContext,
+                            toolMode = TutorToolMode.NONE,
+                            lessonContext = lessonContext
+                        )
+                    ),
+                    initialMessages = conversationHistory.flatMap { turn ->
+                        listOf(
+                            Message.user(turn.userMessage),
+                            Message.model(turn.assistantMessage)
+                        )
+                    }
+                ),
+                conversationKey = conversationKey(
+                    recognitionLocale = recognitionLocale,
+                    tutorContext = tutorContext,
+                    lessonContext = lessonContext
+                )
+            )
+            parseGeneratedReply(
+                rawReply = rawReply,
+                fallbackLocale = tutorContext.targetLanguage,
+                contentLanguageTag = tutorContext.targetLanguage.toLanguageTag()
+            ).copy(contentAction = null, contentActionAlreadyExecuted = false)
         } else {
-            var nativeActionExecuted = false
+            conversationalActionExecuted = false
+            conversationalActionCallback = onContentActionExecuted
             val toolProvider = tool(
                 LearningContentToolSet(
                     LearningContentRepository.getInstance(applicationContext),
+                    targetLanguageTag = tutorContext.targetLanguage.toLanguageTag(),
                     onActionExecuted = { action ->
-                        nativeActionExecuted = true
-                        onContentActionExecuted(action)
+                        conversationalActionExecuted = true
+                        conversationalActionCallback(action)
                     }
                 )
             )
@@ -95,13 +137,18 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                     },
                     tools = listOf(toolProvider),
                     automaticToolCalling = true
+                ),
+                conversationKey = conversationKey(
+                    recognitionLocale = recognitionLocale,
+                    tutorContext = tutorContext,
+                    lessonContext = null
                 )
             )
             parseGeneratedReply(
                 rawReply = rawReply,
                 fallbackLocale = tutorContext.targetLanguage,
                 contentLanguageTag = tutorContext.targetLanguage.toLanguageTag()
-            ).copy(contentActionAlreadyExecuted = nativeActionExecuted)
+            ).copy(contentActionAlreadyExecuted = conversationalActionExecuted)
         }
         generatedReply.copy(
             modelName = modelLabel,
@@ -128,6 +175,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
         val toolProvider = tool(
             LearningContentToolSet(
                 LearningContentRepository.getInstance(applicationContext),
+                targetLanguageTag = tutorContext.targetLanguage.toLanguageTag(),
                 onActionExecuted = { action ->
                     executedAction = action
                     onContentActionExecuted(action)
@@ -183,7 +231,8 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
             transcript = transcript,
             tutorContext = tutorContext,
             conversationHistory = conversationHistory,
-            modelLabel = modelLabel
+            modelLabel = modelLabel,
+            maxAttempts = 1
         ) { prompt ->
             generateRawReply(
                 engine = engine,
@@ -196,21 +245,83 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
     private suspend fun generateRawReply(
         engine: Engine,
         prompt: String,
-        config: ConversationConfig
+        config: ConversationConfig,
+        conversationKey: String? = null
     ): String {
-        val rawReply = withTimeout(90_000) {
-            engine.createConversation(config).use { conversation ->
-                conversation.sendMessage(prompt)
-                    .contents
-                    .contents
-                    .filterIsInstance<Content.Text>()
-                    .joinToString(separator = "") { it.text }
-                    .trim()
+        val rawReply = if (conversationKey == null) {
+            withTimeout(90_000) {
+                engine.createConversation(config).use { conversation ->
+                    conversationReply(conversation, prompt)
+                }
+            }
+        } else {
+            try {
+                withTimeout(90_000) {
+                    val conversation = reusableConversation(
+                        engine = engine,
+                        config = config,
+                        key = conversationKey
+                    )
+                    conversationReply(conversation, prompt).also {
+                        activeConversationTurns += 1
+                    }
+                }
+            } catch (error: Throwable) {
+                closeConversation()
+                throw error
             }
         }
         return rawReply.ifBlank {
             throw IllegalStateException("Le modèle n'a produit aucune réponse.")
         }
+    }
+
+    private fun conversationReply(conversation: Conversation, prompt: String): String =
+        conversation.sendMessage(prompt)
+            .contents
+            .contents
+            .filterIsInstance<Content.Text>()
+            .joinToString(separator = "") { it.text }
+            .trim()
+
+    private fun reusableConversation(
+        engine: Engine,
+        config: ConversationConfig,
+        key: String
+    ): Conversation {
+        val current = activeConversation
+        if (
+            current != null &&
+            current.isAlive &&
+            activeConversationKey == key &&
+            activeConversationTurns < MAX_REUSED_CONVERSATION_TURNS &&
+            current.getTokenCount() < activeMaxTokens - CONVERSATION_OUTPUT_RESERVE_TOKENS
+        ) {
+            return current
+        }
+        closeConversation()
+        return engine.createConversation(config).also { conversation ->
+            activeConversation = conversation
+            activeConversationKey = key
+            activeConversationTurns = 0
+        }
+    }
+
+    private fun conversationKey(
+        recognitionLocale: Locale,
+        tutorContext: TutorContext,
+        lessonContext: LessonChatContext?
+    ): String = listOf(
+        activeModelKey.orEmpty(),
+        recognitionLocale.toLanguageTag(),
+        tutorContext.nativeLanguage.toLanguageTag(),
+        tutorContext.targetLanguage.toLanguageTag(),
+        if (lessonContext == null) TutorToolMode.NATIVE.name else TutorToolMode.NONE.name,
+        lessonContext?.id.orEmpty()
+    ).joinToString("|")
+
+    fun endConversation() {
+        closeConversation()
     }
 
     @Synchronized
@@ -290,6 +401,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                     activeModelKey = openedModel.key
                     activeModel = openedModel
                     activeBackendLabel = candidate.label
+                    activeMaxTokens = candidate.maxTokens
                     if (candidate.kind == AccelerationKind.NPU) {
                         Log.i(
                             TAG,
@@ -417,12 +529,26 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
 
     @Synchronized
     private fun closeEngine() {
+        closeConversation()
         activeEngine?.let(::closeInitializedEngine)
         activeEngine = null
         activeModel?.close()
         activeModel = null
         activeModelKey = null
         activeBackendLabel = null
+        activeMaxTokens = LITERT_NPU_CONTEXT_TOKENS
+    }
+
+    private fun closeConversation() {
+        activeConversation?.let { conversation ->
+            runCatching(conversation::cancelProcess)
+            runCatching(conversation::close)
+        }
+        activeConversation = null
+        activeConversationKey = null
+        activeConversationTurns = 0
+        conversationalActionExecuted = false
+        conversationalActionCallback = {}
     }
 
     private fun closeInitializedEngine(engine: Engine) {
@@ -448,3 +574,5 @@ private data class BackendCandidate(
 )
 
 private const val TAG = "LarpLiteRt"
+private const val MAX_REUSED_CONVERSATION_TURNS = 4
+private const val CONVERSATION_OUTPUT_RESERVE_TOKENS = 1_024

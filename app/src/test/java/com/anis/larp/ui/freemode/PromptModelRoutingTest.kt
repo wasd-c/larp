@@ -2,8 +2,13 @@ package com.anis.larp.ui.freemode
 
 import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.Lesson
+import com.anis.larp.learning.LearningContentAction
 import com.anis.larp.model.LearningLanguage
+import com.anis.larp.model.AccelerationKind
+import com.anis.larp.model.DeviceAccelerationProfile
+import com.anis.larp.model.PromptModelRecord
 import com.anis.larp.model.speechRecognitionLocaleFor
+import com.anis.larp.model.requestsLearningLanguageSwitch
 import java.util.Locale
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -14,6 +19,59 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PromptModelRoutingTest {
+    @Test
+    fun modelContextKeepsOnlyRecentTurnsWithinTheLocalBudget() {
+        val turns = (0 until 6).map { index ->
+            ConversationTurn("user-$index", "assistant-$index")
+        }
+
+        val recent = compactConversationHistory(turns)
+        val bounded = compactConversationHistory(
+            listOf(ConversationTurn("u".repeat(4_000), "a".repeat(4_000)))
+        )
+
+        assertEquals(listOf("user-2", "user-3", "user-4", "user-5"), recent.map { it.userMessage })
+        assertTrue(bounded.sumOf { it.userMessage.length + it.assistantMessage.length } <= 1_600)
+    }
+
+    @Test
+    fun liteRtFallbackCanBeLimitedToOneAdditionalInference() = runBlocking {
+        var attempts = 0
+        val failure = runCatching {
+            generateVerifiedLearningContentReply(
+                kind = LearningContentRequestKind.EXERCISE,
+                transcript = "Create an exercise",
+                tutorContext = TutorContext(Locale.FRANCE, Locale.US),
+                conversationHistory = emptyList(),
+                modelLabel = "Gemma",
+                maxAttempts = 1
+            ) {
+                attempts += 1
+                "LANGUAGE_TAG: fr-FR\nREPLY: Incomplete"
+            }
+        }.exceptionOrNull()
+
+        assertEquals(1, attempts)
+        assertNotNull(failure)
+    }
+
+    @Test
+    fun incompatibleArtifactSelectsTheMatchingDeviceVariant() {
+        val selected = promptRecord("selected", "generic.litertlm")
+        val fallback = promptRecord("fallback", "device-npu.litertlm")
+        val profile = DeviceAccelerationProfile(
+            preferredKind = AccelerationKind.NPU,
+            gemmaArtifactFileName = "device-npu.litertlm",
+            label = "Test NPU",
+            incompatibleArtifactFileNames = setOf("generic.litertlm")
+        )
+
+        assertEquals(
+            fallback,
+            compatibleArtifactFallback(listOf(selected, fallback), selected, profile)
+        )
+    }
+
     @Test
     fun knownPromptModelsUseCompactRuntimeLabels() {
         assertEquals("Gemini", knownModelLabel("Gemini Nano"))
@@ -89,6 +147,30 @@ class PromptModelRoutingTest {
     }
 
     @Test
+    fun lessonChatPromptUsesTheLessonAsReferenceAndDisablesCreationTools() {
+        val prompt = tutorPrompt(
+            transcript = "Pourquoi utilise-t-on me llamo ?",
+            recognitionLocale = Locale.FRANCE,
+            tutorContext = TutorContext(
+                nativeLanguage = Locale.FRANCE,
+                targetLanguage = Locale.forLanguageTag("es-ES")
+            ),
+            lessonContext = LessonChatContext(
+                id = "lesson:introductions",
+                title = "Se présenter",
+                objective = "Dire son nom.",
+                content = "Me llamo Ana.",
+                topic = "Présentation"
+            )
+        )
+
+        assertTrue(prompt.contains("BEGIN LESSON lesson:introductions"))
+        assertTrue(prompt.contains("Me llamo Ana."))
+        assertFalse(prompt.contains("submit_lesson_content"))
+        assertTrue(prompt.contains("Learner's current message: Pourquoi"))
+    }
+
+    @Test
     fun firstTurnDoesNotContainSpokenConversationSentinel() {
         val prompt = tutorPrompt(
             transcript = "Bonjour",
@@ -109,9 +191,9 @@ class PromptModelRoutingTest {
             toolMode = TutorToolMode.NATIVE
         )
 
-        assertTrue(prompt.contains("create_exercise"))
-        assertTrue(prompt.contains("create_lesson"))
-        assertTrue(prompt.contains("call exactly the matching tool"))
+        assertTrue(prompt.contains("submit_lesson_content"))
+        assertFalse(prompt.contains("create_exercise"))
+        assertTrue(prompt.contains("builds every exercise step locally"))
     }
 
     @Test
@@ -123,12 +205,11 @@ class PromptModelRoutingTest {
             toolMode = TutorToolMode.TAGGED_ACTIONS
         )
 
-        assertTrue(prompt.contains("ACTION: CREATE_EXERCISE"))
-        assertTrue(prompt.contains("ACTION: CREATE_LESSON"))
+        assertTrue(prompt.contains("ACTION: SUBMIT_LESSON_CONTENT"))
+        assertTrue(prompt.contains("ACTION_X1"))
+        assertTrue(prompt.contains("ACTION_S2"))
         assertTrue(prompt.contains("ACTION: NONE"))
-        assertTrue(prompt.contains("Présentations, Famille, Routine"))
-        assertTrue(prompt.contains("Société, Avenir"))
-        assertFalse(prompt.contains("1. Présentations"))
+        assertFalse(prompt.contains("ACTION_CHOICES"))
     }
 
     @Test
@@ -143,6 +224,52 @@ class PromptModelRoutingTest {
             LearningContentRequestKind.LESSON,
             requestedLearningContentKind("Prépare-moi une leçon sur les salutations.")
         )
+    }
+
+    @Test
+    fun explicitSpanishCreationOverridesTheEnglishDefault() = runBlocking {
+        val request = "Créer un exercice pour apprendre à me présenter en Espagnol"
+        val explicitLanguage = requireNotNull(
+            LearningLanguage.explicitlyNamedIn(request)
+        )
+        val reply = generateVerifiedLearningContentReply(
+            kind = LearningContentRequestKind.EXERCISE,
+            transcript = request,
+            tutorContext = TutorContext(Locale.FRANCE, explicitLanguage.locale),
+            conversationHistory = emptyList(),
+            modelLabel = "Gemma",
+            maxAttempts = 1
+        ) {
+            """
+                ACTION: SUBMIT_LESSON_CONTENT
+                ACTION_TOPIC: Presentarse
+                ACTION_X1: me llamo
+                ACTION_M1: je m'appelle
+                ACTION_X2: soy
+                ACTION_M2: je suis
+                ACTION_X3: vivo
+                ACTION_M3: j'habite
+                ACTION_S1: Me llamo Ana y vivo aquí.
+                ACTION_SM1: Je m'appelle Ana et j'habite ici.
+                ACTION_I1: 0,2
+                ACTION_S2: Soy Ana y vivo aquí.
+                ACTION_SM2: Je suis Ana et j'habite ici.
+                ACTION_I2: 1,2
+                LANGUAGE_TAG: fr-FR
+                REPLY: L'exercice en espagnol est prêt.
+            """.trimIndent()
+        }
+
+        val action = reply.contentAction as LearningContentAction.CreateLessonContent
+        assertEquals("es-ES", action.languageTag)
+        assertEquals("es", explicitLanguage.locale.language)
+    }
+
+    @Test
+    fun explicitFreeModeSwitchNeedsSwitchWording() {
+        assertTrue(requestsLearningLanguageSwitch("Je veux apprendre l'espagnol."))
+        assertTrue(requestsLearningLanguageSwitch("Passons à l'allemand."))
+        assertFalse(requestsLearningLanguageSwitch("Quelle différence entre espagnol et italien ?"))
     }
 
     @Test
@@ -168,18 +295,19 @@ class PromptModelRoutingTest {
     }
 
     @Test
-    fun dedicatedCreationPromptRequiresCompleteSaveableFields() {
+    fun dedicatedCreationPromptRequiresOnlyCompactLinguisticFields() {
         val prompt = learningContentPrompt(
             kind = LearningContentRequestKind.EXERCISE,
             transcript = "Crée un exercice sur les achats.",
             tutorContext = TutorContext(Locale.FRANCE, Locale.US)
         )
 
-        assertTrue(prompt.contains("ACTION: CREATE_EXERCISE"))
-        assertTrue(prompt.contains("ACTION_EXPECTED_ANSWER:"))
-        assertTrue(prompt.contains("ACTION_EXERCISE_TYPE:"))
-        assertTrue(prompt.contains("ACTION_CHOICES:"))
-        assertTrue(prompt.contains("ACTION_LANGUAGE_TAG: en-US"))
+        assertTrue(prompt.contains("ACTION: SUBMIT_LESSON_CONTENT"))
+        assertTrue(prompt.contains("ACTION_X1:"))
+        assertTrue(prompt.contains("ACTION_M3:"))
+        assertTrue(prompt.contains("ACTION_S2:"))
+        assertFalse(prompt.contains("ACTION_EXPECTED_ANSWER:"))
+        assertFalse(prompt.contains("ACTION_CHOICES:"))
         assertTrue(prompt.contains("Do not ask another question"))
     }
 
@@ -198,14 +326,20 @@ class PromptModelRoutingTest {
                 "LANGUAGE_TAG: fr-FR\nREPLY: Je vais créer un exercice."
             } else {
                 """
-                    ACTION: CREATE_EXERCISE
-                    ACTION_TITLE: Shopping conversation
-                    ACTION_INSTRUCTIONS: Répondez au commerçant en anglais.
-                    ACTION_PROMPT: How much does this cost?
-                    ACTION_EXPECTED_ANSWER: It costs ten dollars.
-                    ACTION_EXERCISE_TYPE: FREE_RESPONSE
-                    ACTION_CHOICES: NONE
-                    ACTION_LANGUAGE_TAG: en-US
+                    ACTION: SUBMIT_LESSON_CONTENT
+                    ACTION_TOPIC: Shopping
+                    ACTION_X1: costs
+                    ACTION_M1: coûte
+                    ACTION_X2: dollars
+                    ACTION_M2: dollars
+                    ACTION_X3: ten
+                    ACTION_M3: dix
+                    ACTION_S1: It costs ten dollars.
+                    ACTION_SM1: Cela coûte dix dollars.
+                    ACTION_I1: 0,1,2
+                    ACTION_S2: This costs five dollars.
+                    ACTION_SM2: Cela coûte cinq dollars.
+                    ACTION_I2: 0,1
                     LANGUAGE_TAG: fr-FR
                     REPLY: L'exercice est disponible dans larp.
                 """.trimIndent()
@@ -215,6 +349,53 @@ class PromptModelRoutingTest {
         assertEquals(2, attempts)
         assertNotNull(reply.contentAction)
         assertEquals("L'exercice est disponible dans larp.", reply.text)
+    }
+
+    @Test
+    fun verifiedCreationRetriesWhenCompactFieldsDecodeToNoUsableContent() = runBlocking {
+        var attempts = 0
+        val reply = generateVerifiedLearningContentReply(
+            kind = LearningContentRequestKind.EXERCISE,
+            transcript = "Crée un exercice pour me présenter.",
+            tutorContext = TutorContext(Locale.FRANCE, Locale.US),
+            conversationHistory = emptyList(),
+            modelLabel = "Gemma"
+        ) {
+            attempts += 1
+            if (attempts == 1) {
+                """
+                    ACTION: SUBMIT_LESSON_CONTENT
+                    ACTION_TOPIC: Introductions
+                    ACTION_TARGETS: [{badly formatted}]
+                    ACTION_SENTENCES: [{badly formatted}]
+                    REPLY: Prêt.
+                """.trimIndent()
+            } else {
+                """
+                    ACTION: SUBMIT_LESSON_CONTENT
+                    ACTION_TOPIC: Introductions
+                    ACTION_X1: name
+                    ACTION_M1: nom
+                    ACTION_X2: live
+                    ACTION_M2: habiter
+                    ACTION_X3: Paris
+                    ACTION_M3: Paris
+                    ACTION_S1: My name is Ana.
+                    ACTION_SM1: Je m'appelle Ana.
+                    ACTION_I1: 0
+                    ACTION_S2: I live in Paris.
+                    ACTION_SM2: J'habite à Paris.
+                    ACTION_I2: 1,2
+                    LANGUAGE_TAG: fr-FR
+                    REPLY: L'exercice est disponible dans larp.
+                """.trimIndent()
+            }
+        }
+
+        assertEquals(2, attempts)
+        val action = reply.contentAction as LearningContentAction.CreateLessonContent
+        assertEquals(3, action.content.targets.size)
+        assertEquals(2, action.content.sentences.size)
     }
 
     @Test
@@ -252,8 +433,9 @@ class PromptModelRoutingTest {
         )
 
         assertTrue(request.contains("Make it harder and focus on bargaining."))
-        assertTrue(request.contains("Title: At the market"))
+        assertTrue(request.contains("Topic: Culture"))
         assertTrue(request.contains("Prompt: How much is it?"))
+        assertFalse(request.contains("Instructions: Répondez"))
         assertTrue(request.contains("language tag en-US"))
         assertTrue(request.contains("complete standalone exercise"))
     }
@@ -276,4 +458,13 @@ class PromptModelRoutingTest {
         assertTrue(request.contains("Hello means bonjour.\nGood evening means bonsoir."))
         assertTrue(request.contains("complete standalone lesson"))
     }
+
+    private fun promptRecord(id: String, artifact: String) = PromptModelRecord(
+        id = id,
+        displayName = "Gemma 4",
+        filePath = "/tmp/$artifact",
+        source = "test",
+        repository = "litert-community/gemma-4-e2b-it-litert-lm",
+        artifactFileName = artifact
+    )
 }

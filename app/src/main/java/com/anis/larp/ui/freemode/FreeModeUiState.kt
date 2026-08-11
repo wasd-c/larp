@@ -17,6 +17,17 @@ enum class CreatedLearningContentKind {
     LESSON
 }
 
+enum class ChatMessageAuthor {
+    LEARNER,
+    TUTOR
+}
+
+@Immutable
+data class TutorChatMessage(
+    val author: ChatMessageAuthor,
+    val text: String
+)
+
 @Immutable
 data class CreatedLearningContent(
     val id: String,
@@ -33,15 +44,19 @@ data class FreeModeUiState(
     val committedTranscript: String = "",
     val partialTranscript: String = "",
     val locale: Locale = Locale.getDefault(),
+    val targetLocale: Locale = Locale.ENGLISH,
     val recognitionMode: String? = null,
     val statusMessage: String? = null,
     val aiReply: String = "",
     val replyLocale: Locale? = null,
     val promptModelName: String? = null,
     val promptAcceleration: String? = null,
+    val modelsReady: Boolean = false,
+    val modelReadinessError: String? = null,
     val conversationActive: Boolean = false,
     val thinkingWord: String? = null,
-    val createdContent: CreatedLearningContent? = null
+    val createdContent: CreatedLearningContent? = null,
+    val chatMessages: List<TutorChatMessage> = emptyList()
 ) {
     val isActive: Boolean
         get() = conversationActive ||
@@ -52,4 +67,9 @@ data class FreeModeUiState(
             .filter(String::isNotBlank)
             .joinToString(separator = " ")
             .trim()
+
+    val canSendText: Boolean
+        get() = modelsReady &&
+            phase != SpeechPhase.THINKING &&
+            phase != SpeechPhase.SPEAKING
 }

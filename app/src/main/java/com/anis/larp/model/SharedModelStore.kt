@@ -71,9 +71,12 @@ class SharedModelStore(context: Context) {
     fun createPending(
         repository: String,
         artifactName: String,
-        displayName: String
+        displayName: String,
+        reuseExisting: Boolean = true
     ): SharedModelFile {
-        findForDownload(repository, artifactName)?.let { return it }
+        if (reuseExisting) {
+            findForDownload(repository, artifactName)?.let { return it }
+        }
         val fileName = safeFileName(artifactName.substringAfterLast('/'))
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
@@ -98,6 +101,37 @@ class SharedModelStore(context: Context) {
             sizeBytes = 0L,
             isPending = true
         )
+    }
+
+    fun importFromUri(
+        sourceUri: Uri,
+        repository: String,
+        artifactName: String,
+        displayName: String
+    ): SharedModelFile {
+        findCompleted(repository, artifactName)?.let { return it }
+        val destination = createPending(
+            repository = repository,
+            artifactName = artifactName,
+            displayName = displayName,
+            reuseExisting = false
+        )
+        if (!destination.isPending && destination.sizeBytes > 0L) return destination
+        return try {
+            truncate(destination.uri)
+            val copiedBytes = resolver.openInputStream(sourceUri)?.buffered().use { input ->
+                requireNotNull(input) { "Android refuse l'accès au fichier sélectionné." }
+                openOutput(destination.uri, append = false).buffered().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            require(copiedBytes > 0L) { "Le fichier sélectionné est vide." }
+            complete(destination.uri)
+            destination.copy(sizeBytes = size(destination.uri), isPending = false)
+        } catch (error: Throwable) {
+            runCatching { delete(destination.uri) }
+            throw error
+        }
     }
 
     fun openOutput(uri: Uri, append: Boolean): OutputStream =

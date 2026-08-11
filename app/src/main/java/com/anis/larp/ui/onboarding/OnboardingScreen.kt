@@ -148,6 +148,9 @@ fun OnboardingScreen(
     var correctingNativeLanguage by remember { mutableStateOf(false) }
     var targetLanguage by remember { mutableStateOf<LearningLanguage?>(null) }
     var asrChoice by remember { mutableStateOf<AsrChoice?>(null) }
+    var asrAdvancedExpanded by remember { mutableStateOf(false) }
+    var importingQwenFiles by remember { mutableStateOf(false) }
+    var qwenImportError by remember { mutableStateOf<String?>(null) }
     var promptChoice by remember { mutableStateOf<PromptChoice?>(null) }
     var advancedExpanded by remember { mutableStateOf(false) }
     var advancedSource by remember {
@@ -158,8 +161,8 @@ fun OnboardingScreen(
     var importingFile by remember { mutableStateOf(false) }
     var importError by remember { mutableStateOf<String?>(null) }
     var pendingCompletion by remember { mutableStateOf<OnboardingSelection?>(null) }
-    val qwenAvailable = remember(context.applicationContext) {
-        QwenAsrModel.isAvailable(context.applicationContext)
+    var qwenAvailable by remember(context.applicationContext) {
+        mutableStateOf(QwenAsrModel.isAvailable(context.applicationContext))
     }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -181,6 +184,24 @@ fun OnboardingScreen(
                         importError = it.message ?: "Import du modèle impossible."
                     }
                 importingFile = false
+            }
+        }
+    }
+    val qwenFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            importingQwenFiles = true
+            qwenImportError = null
+            coroutineScope.launch {
+                runCatching {
+                    QwenAsrModel.importArtifacts(context.applicationContext, uris)
+                }.onSuccess {
+                    qwenAvailable = true
+                }.onFailure { error ->
+                    qwenImportError = error.message ?: "Import des fichiers Qwen impossible."
+                }
+                importingQwenFiles = false
             }
         }
     }
@@ -259,6 +280,13 @@ fun OnboardingScreen(
                     selected = asrChoice,
                     qwenAvailable = qwenAvailable,
                     onSelected = { asrChoice = it },
+                    advancedExpanded = asrAdvancedExpanded,
+                    onAdvancedExpandedChange = { asrAdvancedExpanded = it },
+                    importingQwenFiles = importingQwenFiles,
+                    qwenImportError = qwenImportError,
+                    onPickQwenFiles = {
+                        qwenFilePicker.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
                     onContinue = { step = OnboardingStep.PROMPT_MODEL }
                 )
 
@@ -341,6 +369,11 @@ private fun SpeechRecognitionStep(
     selected: AsrChoice?,
     qwenAvailable: Boolean,
     onSelected: (AsrChoice) -> Unit,
+    advancedExpanded: Boolean,
+    onAdvancedExpandedChange: (Boolean) -> Unit,
+    importingQwenFiles: Boolean,
+    qwenImportError: String?,
+    onPickQwenFiles: () -> Unit,
     onContinue: () -> Unit
 ) {
     StepTitle(
@@ -366,12 +399,70 @@ private fun SpeechRecognitionStep(
         }
     )
     if (selected == AsrChoice.QWEN) {
-        DownloadNotificationCard(alreadyAvailable = qwenAvailable)
+        TextButton(
+            onClick = { onAdvancedExpandedChange(!advancedExpanded) },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (advancedExpanded) "Masquer les options avancées" else "Options avancées")
+        }
+        if (advancedExpanded) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surfaceContainer
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = "Importer Qwen depuis Files",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Sélectionnez ensemble le modèle .gguf et son fichier mmproj. Ils seront copiés dans Download/Models et réutilisés sans téléchargement.",
+                        modifier = Modifier.padding(top = 6.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FilledTonalButton(
+                        onClick = onPickQwenFiles,
+                        enabled = !importingQwenFiles && !qwenAvailable,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 14.dp),
+                        shape = MaterialTheme.shapes.extraLarge
+                    ) {
+                        if (importingQwenFiles) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+                        }
+                        Text(
+                            text = if (qwenAvailable) {
+                                "Fichiers Qwen déjà prêts"
+                            } else {
+                                "Choisir les deux fichiers"
+                            },
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
+                    qwenImportError?.let { error ->
+                        Text(
+                            text = error,
+                            modifier = Modifier.padding(top = 10.dp),
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        } else {
+            DownloadNotificationCard(alreadyAvailable = qwenAvailable)
+        }
     }
     Spacer(Modifier.height(20.dp))
     Button(
         onClick = onContinue,
-        enabled = selected != null,
+        enabled = selected != null && !importingQwenFiles,
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp),

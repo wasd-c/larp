@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -14,8 +15,6 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -31,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -42,6 +42,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.KeyboardActions
@@ -49,11 +50,17 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.RadioButtonChecked
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
-import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -85,6 +92,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -101,7 +109,8 @@ import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
@@ -117,13 +126,14 @@ import com.anis.larp.R
 import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.ExerciseCompletion
 import com.anis.larp.learning.LearnedWord
+import com.anis.larp.learning.LearningTarget
+import com.anis.larp.learning.LessonStep
+import com.anis.larp.ui.theme.LarpMotion
 import java.text.Normalizer
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.random.Random
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 @Composable
@@ -135,6 +145,438 @@ internal fun ExercisePlayer(
     onComplete: (mistakes: Int, elapsedMillis: Long, hintsUsed: Int) -> Unit = { _, _, _ -> },
     onRateDifficulty: (Int) -> Unit = {},
     onProgressChanged: (Boolean) -> Unit = {}
+) {
+    if (exercise.lessonContent != null && exercise.compiledSteps.isNotEmpty()) {
+        CompiledLessonPlayer(
+            exercise = exercise,
+            onBack = onBack,
+            onSpeakWord = onSpeakWord,
+            onRecognizeAnswer = onRecognizeAnswer,
+            onComplete = onComplete,
+            onRateDifficulty = onRateDifficulty,
+            onProgressChanged = onProgressChanged
+        )
+    } else {
+        LegacyExercisePlayer(
+            exercise = exercise,
+            onBack = onBack,
+            onSpeakWord = onSpeakWord,
+            onRecognizeAnswer = onRecognizeAnswer,
+            onComplete = onComplete,
+            onRateDifficulty = onRateDifficulty,
+            onProgressChanged = onProgressChanged
+        )
+    }
+}
+
+@Composable
+private fun CompiledLessonPlayer(
+    exercise: Exercise,
+    onBack: () -> Unit,
+    onSpeakWord: suspend (String, String) -> Unit,
+    onRecognizeAnswer: suspend (String) -> String,
+    onComplete: (mistakes: Int, elapsedMillis: Long, hintsUsed: Int) -> Unit,
+    onRateDifficulty: (Int) -> Unit,
+    onProgressChanged: (Boolean) -> Unit
+) {
+    val content = requireNotNull(exercise.lessonContent)
+    val steps = exercise.compiledSteps
+    var index by rememberSaveable(exercise.id) { mutableIntStateOf(0) }
+    var furthest by rememberSaveable(exercise.id) { mutableIntStateOf(0) }
+    var mistakes by rememberSaveable(exercise.id) { mutableIntStateOf(0) }
+    var hints by rememberSaveable(exercise.id) { mutableIntStateOf(0) }
+    val startedAt = rememberSaveable(exercise.id) { System.currentTimeMillis() }
+    var completion by remember(exercise.id) { mutableStateOf(exercise.completion) }
+
+    LaunchedEffect(index, completion) {
+        onProgressChanged(index > 0 && completion == null)
+    }
+
+    fun finishOrAdvance() {
+        if (index == steps.lastIndex) {
+            val result = ExerciseCompletion(
+                completedAtMillis = System.currentTimeMillis(),
+                mistakes = mistakes,
+                elapsedMillis = System.currentTimeMillis() - startedAt,
+                hintsUsed = hints
+            )
+            completion = result
+            onComplete(result.mistakes, result.elapsedMillis, result.hintsUsed)
+        } else {
+            val next = index + 1
+            furthest = maxOf(furthest, next)
+            index = next
+        }
+    }
+
+    if (completion != null) {
+        ExerciseStepFrame(
+            exercise = exercise,
+            step = steps.size,
+            totalSteps = steps.size,
+            onBack = onBack,
+            onPrevious = null,
+            middleLabel = "",
+            middleEnabled = false,
+            onMiddleClick = {},
+            nextEnabled = false,
+            onNext = {},
+            showProgress = false,
+            showControls = false
+        ) {
+            CompletionSummary(requireNotNull(completion), onRateDifficulty)
+        }
+        return
+    }
+
+    AnimatedContent(
+        targetState = index,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        label = "compiled_lesson_steps"
+    ) { visibleIndex ->
+        val lessonStep = steps[visibleIndex]
+        val number = visibleIndex + 1
+        val previous = if (visibleIndex > 0) ({ index = visibleIndex - 1 }) else null
+        val historyNext = { index = (visibleIndex + 1).coerceAtMost(furthest) }
+        val canReturnForward = visibleIndex < furthest
+        when (lessonStep) {
+            is LessonStep.IntroduceTarget -> {
+                val target = content.targets[lessonStep.targetIndex]
+                LearnWordStep(
+                    exercise, number,
+                    LearnedWord(target.text, target.reading ?: target.text, target.meaning, "", emptyList(), "", ""),
+                    onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, onSpeakWord,
+                    totalSteps = steps.size
+                )
+            }
+            is LessonStep.MeaningChoice -> LocalChoiceStep(
+                exercise, number, steps.size,
+                stringResource(R.string.lesson_choose_meaning, content.targets[lessonStep.targetIndex].text),
+                lessonStep.choices, content.targets[lessonStep.targetIndex].meaning,
+                null, onBack, previous, canReturnForward, historyNext, ::finishOrAdvance,
+                onSpeakWord, { mistakes++ }
+            )
+            is LessonStep.AudioRecognition -> LocalChoiceStep(
+                exercise, number, steps.size,
+                stringResource(R.string.lesson_listen_choose_target),
+                lessonStep.choices, content.targets[lessonStep.targetIndex].text,
+                content.targets[lessonStep.targetIndex].text, onBack, previous,
+                canReturnForward, historyNext, ::finishOrAdvance, onSpeakWord, { mistakes++ }
+            )
+            is LessonStep.MatchTargets -> MatchTargetsStep(
+                exercise, number, steps.size, lessonStep.targetIndexes, content.targets,
+                onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, { mistakes++ }
+            )
+            is LessonStep.ListenSentence -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                ListenSentenceStep(
+                    exercise, number, steps.size, sentence.text, sentence.meaning,
+                    onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, onSpeakWord
+                )
+            }
+            is LessonStep.SentenceMeaningChoice -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                LocalChoiceStep(
+                    exercise, number, steps.size,
+                    stringResource(if (lessonStep.playAudio) R.string.lesson_listen_choose_meaning else R.string.lesson_choose_sentence_meaning),
+                    lessonStep.choices, sentence.meaning,
+                    sentence.text.takeIf { lessonStep.playAudio }, onBack, previous,
+                    canReturnForward, historyNext, ::finishOrAdvance, onSpeakWord, { mistakes++ }
+                )
+            }
+            is LessonStep.ClozeSentence -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                val target = content.targets[lessonStep.missingTargetIndex]
+                GapDragStep(
+                    exercise, number,
+                    LearnedWord(
+                        target.text, target.reading ?: target.text, target.meaning,
+                        sentence.text.replaceFirst(target.text, "___", ignoreCase = true),
+                        lessonStep.choices.filterNot { answersEquivalent(it, target.text) }, "", ""
+                    ),
+                    onBack, previous, canReturnForward, historyNext, ::finishOrAdvance,
+                    { mistakes++ }, totalSteps = steps.size
+                )
+            }
+            is LessonStep.ReorderChunks -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                ReorderStep(
+                    exercise, number, steps.size, stringResource(R.string.lesson_reorder_chunks),
+                    lessonStep.shuffledChunks, sentence.chunks.ifEmpty { sentence.text.split(Regex("\\s+")) },
+                    onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, { mistakes++ }
+                )
+            }
+            is LessonStep.MeaningToSentence -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                ReorderStep(
+                    exercise, number, steps.size, sentence.meaning,
+                    lessonStep.shuffledChunks, sentence.chunks.ifEmpty { sentence.text.split(Regex("\\s+")) },
+                    onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, { mistakes++ }
+                )
+            }
+            is LessonStep.SpeakSentence -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                AnswerStep(
+                    exercise, number,
+                    if (lessonStep.showText) sentence.text else sentence.meaning,
+                    sentence.text, "lesson_answer_$number", false, onBack, previous,
+                    canReturnForward, historyNext, ::finishOrAdvance, onRecognizeAnswer,
+                    { mistakes++ }, { hints++ }, totalSteps = steps.size
+                )
+            }
+            is LessonStep.TypeAnswer -> {
+                val sentence = content.sentences[lessonStep.sentenceIndex]
+                AnswerStep(
+                    exercise, number,
+                    if (lessonStep.showMeaning) sentence.meaning else stringResource(R.string.lesson_type_from_memory),
+                    sentence.text, "lesson_answer_$number", false, onBack, previous,
+                    canReturnForward, historyNext, ::finishOrAdvance, onRecognizeAnswer,
+                    { mistakes++ }, { hints++ }, totalSteps = steps.size
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalChoiceStep(
+    exercise: Exercise,
+    step: Int,
+    totalSteps: Int,
+    prompt: String,
+    choices: List<String>,
+    correctAnswer: String,
+    playAudioText: String?,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onCorrect: () -> Unit,
+    onSpeakWord: suspend (String, String) -> Unit,
+    onMistake: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var selected by rememberSaveable(step, choices) { mutableStateOf<String?>(null) }
+    var attempted by rememberSaveable(step, choices) { mutableStateOf(false) }
+    var correct by rememberSaveable(step, choices) { mutableStateOf(false) }
+    var audioError by remember { mutableStateOf<String?>(null) }
+    fun play() {
+        val text = playAudioText ?: return
+        scope.launch {
+            audioError = runCatching { onSpeakWord(text, exercise.languageTag) }
+                .exceptionOrNull()?.message
+        }
+    }
+    LaunchedEffect(step, playAudioText) { if (playAudioText != null) play() }
+    ExerciseStepFrame(
+        exercise, step, totalSteps, onBack, onPrevious,
+        stringResource(R.string.exercise_verify), selected != null,
+        onMiddleClick = {
+            attempted = true
+            correct = answersEquivalent(selected.orEmpty(), correctAnswer)
+            if (correct) scope.launch { delay(450); onCorrect() } else onMistake()
+        },
+        nextEnabled = canReturnForward,
+        onNext = onHistoryNext
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(prompt, modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                if (playAudioText != null) {
+                    FilledTonalIconButton(onClick = ::play) {
+                        Icon(Icons.AutoMirrored.Rounded.VolumeUp, contentDescription = prompt)
+                    }
+                }
+            }
+            choices.forEachIndexed { index, choice ->
+                FilledTonalButton(
+                    onClick = { selected = choice; attempted = false },
+                    modifier = Modifier.fillMaxWidth().testTag("lesson_choice_$index"),
+                    colors = if (selected == choice) ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ) else ButtonDefaults.filledTonalButtonColors()
+                ) { Text(choice) }
+            }
+            if (attempted && correct) SuccessSurface(stringResource(R.string.exercise_typed_correct))
+            if (attempted && !correct) ErrorSurface(stringResource(R.string.exercise_incorrect))
+            audioError?.let { ErrorText(it) }
+        }
+    }
+}
+
+@Composable
+private fun MatchTargetsStep(
+    exercise: Exercise,
+    step: Int,
+    totalSteps: Int,
+    indexes: List<Int>,
+    targets: List<LearningTarget>,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onCorrect: () -> Unit,
+    onMistake: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var selectedTarget by rememberSaveable(step) { mutableStateOf<Int?>(null) }
+    var matched by rememberSaveable(step) { mutableStateOf<Set<Int>>(emptySet()) }
+    var error by rememberSaveable(step) { mutableStateOf(false) }
+    val meanings = remember(indexes) { indexes.map { it to targets[it].meaning }.shuffled(Random(step)) }
+    ExerciseStepFrame(
+        exercise, step, totalSteps, onBack, onPrevious,
+        stringResource(R.string.exercise_continue), matched.size == indexes.size,
+        onMiddleClick = onCorrect,
+        nextEnabled = canReturnForward,
+        onNext = onHistoryNext
+    ) {
+        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(stringResource(R.string.lesson_match_pairs), style = MaterialTheme.typography.headlineSmall)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    indexes.filterNot(matched::contains).forEach { index ->
+                        FilledTonalButton(
+                            onClick = { selectedTarget = index; error = false },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(targets[index].text) }
+                    }
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    meanings.filterNot { it.first in matched }.forEach { (index, meaning) ->
+                        FilledTonalButton(
+                            onClick = {
+                                if (selectedTarget == index) {
+                                    matched = matched + index
+                                    selectedTarget = null
+                                    error = false
+                                    if (matched.size == indexes.size) scope.launch { delay(450); onCorrect() }
+                                } else {
+                                    error = true
+                                    onMistake()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(meaning) }
+                    }
+                }
+            }
+            if (error) ErrorSurface(stringResource(R.string.exercise_incorrect))
+        }
+    }
+}
+
+@Composable
+private fun ListenSentenceStep(
+    exercise: Exercise,
+    step: Int,
+    totalSteps: Int,
+    text: String,
+    meaning: String,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onContinue: () -> Unit,
+    onSpeakWord: suspend (String, String) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var error by remember { mutableStateOf<String?>(null) }
+    fun play() {
+        scope.launch { error = runCatching { onSpeakWord(text, exercise.languageTag) }.exceptionOrNull()?.message }
+    }
+    LaunchedEffect(step) { play() }
+    ExerciseStepFrame(
+        exercise, step, totalSteps, onBack, onPrevious,
+        stringResource(R.string.exercise_continue), true, onContinue,
+        nextEnabled = canReturnForward, onNext = onHistoryNext
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(stringResource(R.string.lesson_listen_read), style = MaterialTheme.typography.titleMedium)
+            Text(text, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
+            Text(meaning, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+            FilledTonalIconButton(onClick = ::play) {
+                Icon(Icons.AutoMirrored.Rounded.VolumeUp, contentDescription = text)
+            }
+            error?.let { ErrorText(it) }
+        }
+    }
+}
+
+@Composable
+private fun ReorderStep(
+    exercise: Exercise,
+    step: Int,
+    totalSteps: Int,
+    prompt: String,
+    shuffled: List<String>,
+    expected: List<String>,
+    onBack: () -> Unit,
+    onPrevious: (() -> Unit)?,
+    canReturnForward: Boolean,
+    onHistoryNext: () -> Unit,
+    onCorrect: () -> Unit,
+    onMistake: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var remaining by rememberSaveable(step, shuffled) { mutableStateOf(shuffled) }
+    var answer by rememberSaveable(step, shuffled) { mutableStateOf<List<String>>(emptyList()) }
+    var attempted by rememberSaveable(step) { mutableStateOf(false) }
+    var correct by rememberSaveable(step) { mutableStateOf(false) }
+    ExerciseStepFrame(
+        exercise, step, totalSteps, onBack, onPrevious,
+        stringResource(R.string.exercise_verify), remaining.isEmpty(),
+        onMiddleClick = {
+            attempted = true
+            correct = answer.map(::normalizeAnswer) == expected.map(::normalizeAnswer)
+            if (correct) scope.launch { delay(450); onCorrect() } else onMistake()
+        },
+        nextEnabled = canReturnForward, onNext = onHistoryNext
+    ) {
+        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text(prompt, style = MaterialTheme.typography.headlineSmall)
+            Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+                FlowRow(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    answer.forEachIndexed { index, chunk ->
+                        SuggestionChip(onClick = {
+                            answer = answer.toMutableList().also { it.removeAt(index) }
+                            remaining = remaining + chunk
+                            attempted = false
+                        }, label = { Text(chunk) })
+                    }
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                remaining.forEachIndexed { index, chunk ->
+                    SuggestionChip(onClick = {
+                        answer = answer + chunk
+                        remaining = remaining.toMutableList().also { it.removeAt(index) }
+                        attempted = false
+                    }, label = { Text(chunk) })
+                }
+            }
+            if (attempted && correct) SuccessSurface(stringResource(R.string.exercise_typed_correct))
+            if (attempted && !correct) ErrorSurface(stringResource(R.string.exercise_incorrect))
+        }
+    }
+}
+
+@Composable
+private fun LegacyExercisePlayer(
+    exercise: Exercise,
+    onBack: () -> Unit,
+    onSpeakWord: suspend (String, String) -> Unit,
+    onRecognizeAnswer: suspend (String) -> String,
+    onComplete: (mistakes: Int, elapsedMillis: Long, hintsUsed: Int) -> Unit,
+    onRateDifficulty: (Int) -> Unit,
+    onProgressChanged: (Boolean) -> Unit
 ) {
     var step by rememberSaveable(exercise.id) { mutableIntStateOf(1) }
     var furthestUnlockedStep by rememberSaveable(exercise.id) { mutableIntStateOf(1) }
@@ -324,17 +766,20 @@ internal fun ExercisePlayer(
 private fun ExerciseStepFrame(
     exercise: Exercise,
     step: Int,
+    totalSteps: Int = 10,
     onBack: () -> Unit,
     onPrevious: (() -> Unit)?,
     middleLabel: String,
     middleEnabled: Boolean,
     onMiddleClick: () -> Unit,
-    onMiddleLongClick: (() -> Unit)? = null,
     nextEnabled: Boolean,
     nextLabel: String = stringResource(R.string.exercise_next),
     onNext: () -> Unit,
     showProgress: Boolean = true,
     showControls: Boolean = true,
+    voiceEnabled: Boolean = false,
+    voiceActive: Boolean = false,
+    onVoiceClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit
 ) {
     val density = LocalDensity.current
@@ -344,7 +789,12 @@ private fun ExerciseStepFrame(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(exercise.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        text = exercise.title,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium
+                    )
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
@@ -363,10 +813,12 @@ private fun ExerciseStepFrame(
                     middleLabel = middleLabel,
                     middleEnabled = middleEnabled,
                     onMiddleClick = onMiddleClick,
-                    onMiddleLongClick = onMiddleLongClick,
                     nextEnabled = nextEnabled,
                     nextLabel = nextLabel,
-                    onNext = onNext
+                    onNext = onNext,
+                    voiceEnabled = voiceEnabled,
+                    voiceActive = voiceActive,
+                    onVoiceClick = onVoiceClick
                 )
             }
         }
@@ -376,10 +828,10 @@ private fun ExerciseStepFrame(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .consumeWindowInsets(innerPadding)
-                .padding(horizontal = 20.dp, vertical = 12.dp)
+                .padding(horizontal = 20.dp, vertical = 10.dp)
         ) {
             AnimatedVisibility(visible = showProgress && !imeVisible) {
-                ExerciseOverview(exercise = exercise, step = step)
+                ExerciseOverview(step = step, totalSteps = totalSteps)
             }
             Box(modifier = Modifier.fillMaxSize(), content = content)
         }
@@ -387,30 +839,29 @@ private fun ExerciseStepFrame(
 }
 
 @Composable
-private fun ExerciseOverview(exercise: Exercise, step: Int) {
+private fun ExerciseOverview(step: Int, totalSteps: Int) {
+    val progress by animateFloatAsState(
+        targetValue = step / totalSteps.coerceAtLeast(1).toFloat(),
+        animationSpec = LarpMotion.expressiveEffectsSpec(),
+        label = "lesson_progress"
+    )
     Column(
-        modifier = Modifier.padding(bottom = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        modifier = Modifier.padding(bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = exercise.instructions,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
+            text = stringResource(R.string.exercise_step_progress, step, totalSteps),
+            color = MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.labelLarge
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(R.string.exercise_step_progress, step),
-                modifier = Modifier.weight(1f),
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.labelLarge
-            )
-            Text("${step * 10} %", style = MaterialTheme.typography.labelMedium)
-        }
         LinearProgressIndicator(
-            progress = { step / 10f },
-            modifier = Modifier.fillMaxWidth()
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(12.dp)
+                .clip(CircleShape),
+            color = MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
         )
     }
 }
@@ -425,13 +876,16 @@ private fun LearnWordStep(
     canReturnForward: Boolean,
     onHistoryNext: () -> Unit,
     onContinue: () -> Unit,
-    onSpeakWord: suspend (String, String) -> Unit
+    onSpeakWord: suspend (String, String) -> Unit,
+    totalSteps: Int = 10
 ) {
     val scope = rememberCoroutineScope()
     var audioError by remember { mutableStateOf<String?>(null) }
+    var playingAudio by remember { mutableStateOf(false) }
     ExerciseStepFrame(
         exercise = exercise,
         step = step,
+        totalSteps = totalSteps,
         onBack = onBack,
         onPrevious = onPrevious,
         middleLabel = stringResource(R.string.exercise_continue),
@@ -444,52 +898,84 @@ private fun LearnWordStep(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(stringResource(R.string.exercise_learn_word), style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.exercise_learn_word),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.titleMedium
+            )
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 260.dp),
                 shape = MaterialTheme.shapes.extraLarge,
-                color = MaterialTheme.colorScheme.primaryContainer
+                color = MaterialTheme.colorScheme.primaryContainer,
+                tonalElevation = 3.dp
             ) {
-                Row(
-                    modifier = Modifier.padding(24.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.padding(28.dp),
+                    verticalArrangement = Arrangement.spacedBy(22.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    Text(
+                        text = word.text,
+                        style = MaterialTheme.typography.displaySmall,
+                        textAlign = TextAlign.Center
+                    )
+                    if (word.pronunciation.isNotBlank() &&
+                        normalizeAnswer(word.pronunciation) != normalizeAnswer(word.text)
                     ) {
-                        Text(
-                            text = word.text,
-                            style = MaterialTheme.typography.headlineMedium,
-                            textAlign = TextAlign.Center
-                        )
                         Text(
                             text = word.pronunciation,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyLarge
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
                         )
                     }
                     FilledTonalIconButton(
                         onClick = {
                             scope.launch {
+                                playingAudio = true
                                 audioError = runCatching {
                                     onSpeakWord(word.text, exercise.languageTag)
                                 }.exceptionOrNull()?.message
+                                playingAudio = false
                             }
                         },
-                        modifier = Modifier.testTag("speak_${word.text}")
+                        modifier = Modifier
+                            .size(64.dp)
+                            .testTag("speak_${word.text}")
                     ) {
                         Icon(
                             Icons.AutoMirrored.Rounded.VolumeUp,
-                            contentDescription = word.text
+                            contentDescription = word.text,
+                            modifier = Modifier.size(if (playingAudio) 34.dp else 30.dp)
                         )
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                stringResource(R.string.exercise_meaning),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                            Text(
+                                word.definition,
+                                style = MaterialTheme.typography.headlineSmall,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
             }
-            Text(word.definition, style = MaterialTheme.typography.bodyLarge)
             audioError?.let { ErrorText(it) }
         }
     }
@@ -510,7 +996,8 @@ private fun AnswerStep(
     onCorrect: () -> Unit,
     onRecognizeAnswer: suspend (String) -> String,
     onMistake: () -> Unit,
-    onHint: (() -> Unit)? = null
+    onHint: (() -> Unit)? = null,
+    totalSteps: Int = 10
 ) {
     val context = LocalContext.current
     val resources = LocalResources.current
@@ -601,6 +1088,7 @@ private fun AnswerStep(
     ExerciseStepFrame(
         exercise = exercise,
         step = step,
+        totalSteps = totalSteps,
         onBack = onBack,
         onPrevious = onPrevious,
         middleLabel = stringResource(R.string.exercise_answer),
@@ -609,9 +1097,11 @@ private fun AnswerStep(
             inputVisible = true
             error = null
         },
-        onMiddleLongClick = startVoice,
         nextEnabled = canReturnForward,
-        onNext = onHistoryNext
+        onNext = onHistoryNext,
+        voiceEnabled = !listening,
+        voiceActive = listening,
+        onVoiceClick = startVoice
     ) {
         Column(
             modifier = Modifier
@@ -642,13 +1132,7 @@ private fun AnswerStep(
                     )
                 )
             } else if (listening) {
-                Text(
-                    stringResource(
-                        R.string.exercise_listening,
-                        Locale.forLanguageTag(exercise.languageTag).displayLanguage
-                    ),
-                    color = MaterialTheme.colorScheme.primary
-                )
+                VoiceListeningSurface(exercise.languageTag)
             }
 
             if (visibleTranscript.isNotBlank() && !correct) {
@@ -706,7 +1190,8 @@ private fun GapDragStep(
     canReturnForward: Boolean,
     onHistoryNext: () -> Unit,
     onCorrect: () -> Unit,
-    onMistake: () -> Unit
+    onMistake: () -> Unit,
+    totalSteps: Int = 10
 ) {
     val scope = rememberCoroutineScope()
     var targetBounds by remember { mutableStateOf(Rect.Zero) }
@@ -720,6 +1205,7 @@ private fun GapDragStep(
     ExerciseStepFrame(
         exercise = exercise,
         step = step,
+        totalSteps = totalSteps,
         onBack = onBack,
         onPrevious = onPrevious,
         middleLabel = stringResource(R.string.exercise_verify),
@@ -1142,139 +1628,168 @@ private fun ExerciseControls(
     middleLabel: String,
     middleEnabled: Boolean,
     onMiddleClick: () -> Unit,
-    onMiddleLongClick: (() -> Unit)?,
     nextEnabled: Boolean,
     nextLabel: String,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    voiceEnabled: Boolean,
+    voiceActive: Boolean,
+    onVoiceClick: (() -> Unit)?
 ) {
-    Surface(color = MaterialTheme.colorScheme.surface) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 3.dp
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
                 .imePadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(
-                ButtonGroupDefaults.ConnectedSpaceBetween
-            )
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            FilledTonalButton(
-                onClick = { onPrevious?.invoke() },
-                shapes = ButtonDefaults.shapes(
-                    shape = ButtonGroupDefaults.connectedLeadingButtonShape,
-                    pressedShape = ButtonGroupDefaults.connectedLeadingButtonPressShape
-                ),
-                modifier = Modifier.weight(1f),
-                enabled = onPrevious != null,
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                Text(stringResource(R.string.exercise_previous), maxLines = 1)
+            if (onPrevious != null) {
+                FilledTonalIconButton(onClick = onPrevious) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = stringResource(R.string.exercise_previous)
+                    )
+                }
             }
-            HoldAnswerButton(
-                label = middleLabel,
-                enabled = middleEnabled,
+            if (onVoiceClick != null) {
+                FilledTonalButton(
+                    onClick = onVoiceClick,
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .testTag("exercise_voice_action"),
+                    enabled = voiceEnabled
+                ) {
+                    Icon(
+                        if (voiceActive) Icons.Rounded.RadioButtonChecked else Icons.Rounded.Mic,
+                        contentDescription = null
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        stringResource(
+                            if (voiceActive) R.string.exercise_listening_short else R.string.exercise_speak
+                        ),
+                        maxLines = 1
+                    )
+                }
+            }
+            Button(
                 onClick = onMiddleClick,
-                onLongClick = onMiddleLongClick,
-                modifier = Modifier.weight(1.15f)
-            )
-            FilledTonalButton(
-                onClick = onNext,
-                shapes = ButtonDefaults.shapes(
-                    shape = ButtonGroupDefaults.connectedTrailingButtonShape,
-                    pressedShape = ButtonGroupDefaults.connectedTrailingButtonPressShape
-                ),
-                modifier = Modifier.weight(1f),
-                enabled = nextEnabled,
-                contentPadding = PaddingValues(horizontal = 8.dp)
+                modifier = Modifier
+                    .weight(1.15f)
+                    .testTag("exercise_primary_action"),
+                enabled = middleEnabled,
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)
             ) {
-                Text(nextLabel, maxLines = 1)
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun HoldAnswerButton(
-    label: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    onLongClick: (() -> Unit)?,
-    modifier: Modifier = Modifier
-) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val holdLabel = stringResource(R.string.exercise_hold_to_speak)
-    var longPressTriggered by remember { mutableStateOf(false) }
-    LaunchedEffect(interactionSource, enabled, onLongClick) {
-        var holdJob: Job? = null
-        interactionSource.interactions.collect { interaction ->
-            when (interaction) {
-                is PressInteraction.Press -> {
-                    holdJob?.cancel()
-                    holdJob = if (enabled && onLongClick != null) {
-                        launch {
-                            delay(500)
-                            longPressTriggered = true
-                            onLongClick()
-                        }
-                    } else null
+                if (onVoiceClick != null) {
+                    Icon(Icons.Rounded.Keyboard, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
                 }
-                is PressInteraction.Release,
-                is PressInteraction.Cancel -> {
-                    holdJob?.cancel()
-                    holdJob = null
+                Text(
+                    middleLabel,
+                    maxLines = 1
+                )
+            }
+            if (nextEnabled) {
+                FilledTonalIconButton(onClick = onNext) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowForward,
+                        contentDescription = nextLabel
+                    )
                 }
             }
         }
-    }
-    FilledTonalButton(
-        onClick = {
-            if (longPressTriggered) longPressTriggered = false else onClick()
-        },
-        shapes = ButtonDefaults.shapes(
-            shape = androidx.compose.material3.ShapeDefaults.Small,
-            pressedShape = ButtonGroupDefaults.connectedMiddleButtonPressShape
-        ),
-        modifier = modifier.semantics {
-            if (onLongClick != null) {
-                onLongClick(label = holdLabel) {
-                    onLongClick()
-                    true
-                }
-            }
-        },
-        interactionSource = interactionSource,
-        enabled = enabled,
-        contentPadding = PaddingValues(horizontal = 8.dp)
-    ) {
-        Text(label, maxLines = 1)
     }
 }
 
 @Composable
 private fun SuccessSurface(message: String) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
         shape = MaterialTheme.shapes.extraLarge,
         color = correctContainerColor()
     ) {
-        Text(message, modifier = Modifier.padding(16.dp), fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Rounded.CheckCircle, contentDescription = null)
+            Text(message, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun VoiceListeningSurface(languageTag: String) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.RadioButtonChecked,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Column {
+                Text(
+                    stringResource(R.string.exercise_listening_short),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    stringResource(
+                        R.string.exercise_listening,
+                        Locale.forLanguageTag(languageTag).displayLanguage
+                    ),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.78f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun ErrorSurface(message: String) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
         shape = MaterialTheme.shapes.extraLarge,
         color = MaterialTheme.colorScheme.errorContainer
     ) {
-        Text(
-            message,
+        Row(
             modifier = Modifier.padding(16.dp),
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            fontWeight = FontWeight.SemiBold
-        )
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Text(
+                text = message,
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
 }
 

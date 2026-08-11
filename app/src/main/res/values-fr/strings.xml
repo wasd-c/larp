@@ -1,13 +1,15 @@
 <resources>
     <string name="app_name">larp</string>
     <string name="exercise_back">Retour</string>
-    <string name="exercise_step_progress">Étape %1$d sur 10</string>
+    <string name="exercise_step_progress">Étape %1$d sur %2$d</string>
     <string name="exercise_previous">Précédent</string>
     <string name="exercise_answer">Répondre</string>
     <string name="exercise_continue">Continuer</string>
     <string name="exercise_verify">Vérifier</string>
     <string name="exercise_next">Suivant</string>
-    <string name="exercise_hold_to_speak">Maintenir pour parler</string>
+    <string name="exercise_speak">Parler</string>
+    <string name="exercise_listening_short">Écoute…</string>
+    <string name="exercise_meaning">Signification</string>
     <string name="exercise_learn_word">Apprenez ce mot</string>
     <string name="exercise_speak_or_type">Dites ou écrivez « %1$s »</string>
     <string name="exercise_your_answer">Votre réponse</string>
@@ -41,4 +43,12 @@
     <string name="exercise_exit_message">Votre progression actuelle n’est pas enregistrée. Si vous quittez maintenant, vous devrez recommencer cet exercice.</string>
     <string name="exercise_exit_confirm">Quitter</string>
     <string name="exercise_exit_dismiss">Continuer l’exercice</string>
+    <string name="lesson_choose_meaning">Choisis la signification de « %1$s »</string>
+    <string name="lesson_listen_choose_target">Écoute et choisis ce que tu entends</string>
+    <string name="lesson_listen_choose_meaning">Écoute et choisis la bonne signification</string>
+    <string name="lesson_choose_sentence_meaning">Choisis la signification de la phrase</string>
+    <string name="lesson_match_pairs">Associe chaque élément à sa signification</string>
+    <string name="lesson_listen_read">Écoute et lis la phrase</string>
+    <string name="lesson_reorder_chunks">Remets les blocs dans l’ordre</string>
+    <string name="lesson_type_from_memory">Écris la phrase de mémoire</string>
 </resources>
