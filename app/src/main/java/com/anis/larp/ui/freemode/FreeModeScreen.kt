@@ -144,11 +144,13 @@ fun FreeModeScreen(
                 }
                 Spacer(Modifier.height(18.dp))
                 TranscriptSurface(uiState = uiState)
-                Spacer(Modifier.height(14.dp))
-                TextConversationComposer(
-                    enabled = uiState.canSendText,
-                    onSend = onSendText
-                )
+                if (!uiState.isActive) {
+                    Spacer(Modifier.height(14.dp))
+                    TextConversationComposer(
+                        enabled = uiState.canSendText,
+                        onSend = onSendText
+                    )
+                }
                 Spacer(Modifier.height(if (compactHeight) 18.dp else 24.dp))
                 ExpressivePill(
                     label = if (uiState.isActive) {

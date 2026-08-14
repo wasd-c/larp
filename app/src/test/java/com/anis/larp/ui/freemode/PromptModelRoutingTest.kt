@@ -35,7 +35,7 @@ class PromptModelRoutingTest {
     }
 
     @Test
-    fun liteRtFallbackCanBeLimitedToOneAdditionalInference() = runBlocking {
+    fun verifiedCreationFailureUsesBothAttempts() = runBlocking {
         var attempts = 0
         val failure = runCatching {
             generateVerifiedLearningContentReply(
@@ -43,16 +43,25 @@ class PromptModelRoutingTest {
                 transcript = "Create an exercise",
                 tutorContext = TutorContext(Locale.FRANCE, Locale.US),
                 conversationHistory = emptyList(),
-                modelLabel = "Gemma",
-                maxAttempts = 1
+                modelLabel = "Gemma"
             ) {
                 attempts += 1
                 "LANGUAGE_TAG: fr-FR\nREPLY: Incomplete"
             }
         }.exceptionOrNull()
 
-        assertEquals(1, attempts)
+        assertEquals(2, attempts)
         assertNotNull(failure)
+        assertTrue(failure?.message.orEmpty().contains("après 2 tentatives"))
+    }
+
+    @Test
+    fun gemmaUsesDeviceCompatibleTopK() {
+        val sampler = gemmaCompatibleSamplerConfig()
+
+        assertEquals(1, sampler.topK)
+        assertEquals(0.95, sampler.topP, 0.0)
+        assertEquals(1.0, sampler.temperature, 0.0)
     }
 
     @Test
@@ -237,8 +246,7 @@ class PromptModelRoutingTest {
             transcript = request,
             tutorContext = TutorContext(Locale.FRANCE, explicitLanguage.locale),
             conversationHistory = emptyList(),
-            modelLabel = "Gemma",
-            maxAttempts = 1
+            modelLabel = "Gemma"
         ) {
             """
                 ACTION: SUBMIT_LESSON_CONTENT

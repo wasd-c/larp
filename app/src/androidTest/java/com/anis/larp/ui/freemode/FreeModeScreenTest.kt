@@ -247,7 +247,12 @@ class FreeModeScreenTest {
     fun primaryActionShowsLiveTranscriptionAndStops() {
         composeRule.setContent {
             var state by remember {
-                mutableStateOf(FreeModeUiState(locale = Locale.FRANCE))
+                mutableStateOf(
+                    FreeModeUiState(
+                        locale = Locale.FRANCE,
+                        modelsReady = true
+                    )
+                )
             }
             LarpTheme(dynamicColor = false) {
                 FreeModeScreen(
@@ -274,7 +279,12 @@ class FreeModeScreenTest {
             }
         }
 
+        composeRule.onNodeWithTag("free_text_input").assertIsDisplayed()
         composeRule.onNodeWithText("Commencer à parler").performClick()
+        assertEquals(
+            0,
+            composeRule.onAllNodesWithTag("free_text_input").fetchSemanticsNodes().size
+        )
         composeRule.onNodeWithText("Terminer la conversation").assertIsDisplayed()
         composeRule.onNodeWithText("Écoute en cours").assertIsDisplayed()
         composeRule
@@ -283,6 +293,7 @@ class FreeModeScreenTest {
         composeRule.onNodeWithText("Langue : fr-FR · Mode Basique").assertIsDisplayed()
 
         composeRule.onNodeWithText("Terminer la conversation").performClick()
+        composeRule.onNodeWithTag("free_text_input").assertIsDisplayed()
         composeRule.onNodeWithText("Commencer à parler").assertIsDisplayed()
         composeRule.onNodeWithText("Prêt à transcrire").assertIsDisplayed()
         composeRule

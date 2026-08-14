@@ -259,12 +259,10 @@ internal suspend fun generateVerifiedLearningContentReply(
     tutorContext: TutorContext,
     conversationHistory: List<ConversationTurn>,
     modelLabel: String,
-    maxAttempts: Int = MAX_CREATION_ATTEMPTS,
     generateRawReply: suspend (String) -> String
 ): GeneratedReply {
-    require(maxAttempts > 0) { "Au moins une tentative de génération est requise." }
     var lastFailure: Throwable? = null
-    repeat(maxAttempts) { attempt ->
+    repeat(MAX_CREATION_ATTEMPTS) { attempt ->
         val rawReply = try {
             generateRawReply(
                 learningContentPrompt(
@@ -324,7 +322,7 @@ internal suspend fun generateVerifiedLearningContentReply(
 
     throw IllegalStateException(
         "$modelLabel n'a pas fourni ${kind.frenchObjectWithAdjective()} après " +
-            "$maxAttempts tentative${if (maxAttempts > 1) "s" else ""}. Rien n'a été enregistré.",
+            "$MAX_CREATION_ATTEMPTS tentatives. Rien n'a été enregistré.",
         lastFailure
     )
 }

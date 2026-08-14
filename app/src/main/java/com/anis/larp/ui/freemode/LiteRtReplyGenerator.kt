@@ -20,6 +20,7 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.tool
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -92,7 +93,8 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                             Message.user(turn.userMessage),
                             Message.model(turn.assistantMessage)
                         )
-                    }
+                    },
+                    samplerConfig = gemmaCompatibleSamplerConfig()
                 ),
                 conversationKey = conversationKey(
                     recognitionLocale = recognitionLocale,
@@ -136,6 +138,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                         )
                     },
                     tools = listOf(toolProvider),
+                    samplerConfig = gemmaCompatibleSamplerConfig(),
                     automaticToolCalling = true
                 ),
                 conversationKey = conversationKey(
@@ -201,6 +204,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                         )
                     },
                     tools = listOf(toolProvider),
+                    samplerConfig = gemmaCompatibleSamplerConfig(),
                     automaticToolCalling = true
                 )
             )
@@ -231,13 +235,14 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
             transcript = transcript,
             tutorContext = tutorContext,
             conversationHistory = conversationHistory,
-            modelLabel = modelLabel,
-            maxAttempts = 1
+            modelLabel = modelLabel
         ) { prompt ->
             generateRawReply(
                 engine = engine,
                 prompt = prompt,
-                config = ConversationConfig()
+                config = ConversationConfig(
+                    samplerConfig = gemmaCompatibleSamplerConfig()
+                )
             )
         }
     }
@@ -562,6 +567,17 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
     }
 
 }
+
+/**
+ * Gemma 4's bundled LiteRT output head exposes one candidate. LiteRT-LM's
+ * engine default requests 64, which nativeSendMessage rejects before decoding.
+ * Preserve the runtime's other sampling defaults while selecting that one head.
+ */
+internal fun gemmaCompatibleSamplerConfig(): SamplerConfig = SamplerConfig(
+    topK = 1,
+    topP = 0.95,
+    temperature = 1.0
+)
 
 internal const val LITERT_TOTAL_CONTEXT_TOKENS = 8_192
 internal const val LITERT_NPU_CONTEXT_TOKENS = 4_096
