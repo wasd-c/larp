@@ -45,7 +45,7 @@ class PromptModelRoutingTest {
     }
 
     @Test
-    fun liteRtFallbackCanBeLimitedToOneAdditionalInference() = runBlocking {
+    fun verifiedCreationFailureUsesBothAttempts() = runBlocking {
         var attempts = 0
         val failure = runCatching {
             generateVerifiedLearningContentReply(
@@ -53,16 +53,16 @@ class PromptModelRoutingTest {
                 transcript = "Create an exercise",
                 tutorContext = TutorContext(Locale.FRANCE, Locale.US),
                 conversationHistory = emptyList(),
-                modelLabel = "Gemma",
-                maxAttempts = 1
+                modelLabel = "Gemma"
             ) {
                 attempts += 1
                 "LANGUAGE_TAG: fr-FR\nREPLY: Incomplete"
             }
         }.exceptionOrNull()
 
-        assertEquals(1, attempts)
+        assertEquals(2, attempts)
         assertNotNull(failure)
+        assertTrue(failure?.message.orEmpty().contains("après 2 tentatives"))
     }
 
     @Test
@@ -265,8 +265,7 @@ class PromptModelRoutingTest {
             transcript = request,
             tutorContext = TutorContext(Locale.FRANCE, explicitLanguage.locale),
             conversationHistory = emptyList(),
-            modelLabel = "Gemma",
-            maxAttempts = 1
+            modelLabel = "Gemma"
         ) {
             """
                 ACTION: SUBMIT_LESSON_CONTENT
@@ -342,13 +341,15 @@ class PromptModelRoutingTest {
     @Test
     fun verifiedCreationRetriesUntilModelProvidesPersistableAction() = runBlocking {
         var attempts = 0
+        val prompts = mutableListOf<String>()
         val reply = generateVerifiedLearningContentReply(
             kind = LearningContentRequestKind.EXERCISE,
             transcript = "Crée-moi un exercice sur les achats.",
             tutorContext = TutorContext(Locale.FRANCE, Locale.US),
             conversationHistory = emptyList(),
             modelLabel = "Gemma"
-        ) {
+        ) { prompt ->
+            prompts += prompt
             attempts += 1
             if (attempts == 1) {
                 "LANGUAGE_TAG: fr-FR\nREPLY: Je vais créer un exercice."
@@ -375,8 +376,83 @@ class PromptModelRoutingTest {
         }
 
         assertEquals(2, attempts)
+        assertTrue(prompts.last().contains("The app rejected it because"))
+        assertTrue(prompts.last().contains("n'a pas retourné d'action de création"))
         assertNotNull(reply.contentAction)
         assertEquals("L'exercice est disponible dans larp.", reply.text)
+    }
+
+    @Test
+    fun chineseCreationRetriesWithValidationFeedback() = runBlocking {
+        val prompts = mutableListOf<String>()
+        val reply = generateVerifiedLearningContentReply(
+            kind = LearningContentRequestKind.EXERCISE,
+            transcript = "Crée-moi un exercice pour apprendre à me présenter en chinois.",
+            tutorContext = TutorContext(
+                nativeLanguage = Locale.FRANCE,
+                targetLanguage = Locale.forLanguageTag("zh-Hans-CN")
+            ),
+            conversationHistory = emptyList(),
+            modelLabel = "Gemma"
+        ) { prompt ->
+            prompts += prompt
+            if (prompts.size == 1) {
+                """
+                    ACTION: SUBMIT_LESSON_CONTENT
+                    ACTION_TOPIC: Introductions
+                    ACTION_X1: 我叫
+                    ACTION_M1: je m'appelle
+                    ACTION_R1: NONE
+                    ACTION_X2: 你好
+                    ACTION_M2: bonjour
+                    ACTION_R2: NONE
+                    ACTION_X3: 来自
+                    ACTION_M3: venir de
+                    ACTION_R3: NONE
+                    ACTION_S1: 我是Anis。
+                    ACTION_SM1: Je suis Anis.
+                    ACTION_I1: 0
+                    ACTION_C1: NONE
+                    ACTION_S2: 我住在法国。
+                    ACTION_SM2: J'habite en France.
+                    ACTION_I2: 1,2
+                    ACTION_C2: NONE
+                    LANGUAGE_TAG: fr-FR
+                    REPLY: L'exercice est prêt.
+                """.trimIndent()
+            } else {
+                """
+                    ACTION: SUBMIT_LESSON_CONTENT
+                    ACTION_TOPIC: Introductions
+                    ACTION_X1: 我叫
+                    ACTION_M1: je m'appelle
+                    ACTION_R1: wǒ jiào
+                    ACTION_X2: 你好
+                    ACTION_M2: bonjour
+                    ACTION_R2: nǐ hǎo
+                    ACTION_X3: 来自
+                    ACTION_M3: venir de
+                    ACTION_R3: láizì
+                    ACTION_S1: 你好，我叫Anis。
+                    ACTION_SM1: Bonjour, je m'appelle Anis.
+                    ACTION_I1: 0,1
+                    ACTION_C1: NONE
+                    ACTION_S2: 我来自法国。
+                    ACTION_SM2: Je viens de France.
+                    ACTION_I2: 2
+                    ACTION_C2: NONE
+                    LANGUAGE_TAG: fr-FR
+                    REPLY: L'exercice est disponible dans larp.
+                """.trimIndent()
+            }
+        }
+
+        assertEquals(2, prompts.size)
+        assertTrue(prompts.last().contains("needs a Latin pinyin reading"))
+        assertTrue(prompts.last().contains("is not used by any sentence"))
+        val action = reply.contentAction as LearningContentAction.CreateLessonContent
+        assertEquals("zh-Hans-CN", action.languageTag)
+        assertTrue(action.content.targets.all { !it.reading.isNullOrBlank() })
     }
 
     @Test

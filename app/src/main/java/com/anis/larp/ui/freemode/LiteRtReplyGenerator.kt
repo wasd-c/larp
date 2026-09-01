@@ -161,8 +161,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                         transcript = transcript,
                         tutorContext = tutorContext,
                         conversationHistory = conversationHistory,
-                        modelLabel = modelLabel,
-                        maxAttempts = 1
+                        modelLabel = modelLabel
                     ) { prompt ->
                         generateRawReply(
                             engine = engine,
@@ -283,8 +282,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
             transcript = transcript,
             tutorContext = tutorContext,
             conversationHistory = conversationHistory,
-            modelLabel = modelLabel,
-            maxAttempts = 1
+            modelLabel = modelLabel
         ) { prompt ->
             generateRawReply(
                 engine = engine,
