@@ -3,6 +3,7 @@ package com.anis.larp.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -90,6 +91,17 @@ fun LarpApp(
         }
     }
 
+    fun closeModelSettings() {
+        if (!modelSettingsOpen) return
+
+        modelSettingsOpen = false
+        downloadSchedulingComplete = false
+        enqueueMissingSelectedModels()
+        downloadSchedulingComplete = true
+        VoiceConversationController.getInstance(context.applicationContext)
+            .preloadSelectedModel()
+    }
+
     LaunchedEffect(
         onboardingComplete,
         preferences.promptModelId,
@@ -150,18 +162,16 @@ fun LarpApp(
         return
     }
 
+    BackHandler(
+        enabled = modelSettingsOpen,
+        onBack = ::closeModelSettings
+    )
+
     if (modelSettingsOpen) {
         ModelSettingsScreen(
             preferences = preferences,
             promptCatalog = promptCatalog,
-            onBack = {
-                modelSettingsOpen = false
-                downloadSchedulingComplete = false
-                enqueueMissingSelectedModels()
-                downloadSchedulingComplete = true
-                VoiceConversationController.getInstance(context.applicationContext)
-                    .preloadSelectedModel()
-            }
+            onBack = ::closeModelSettings
         )
         return
     }

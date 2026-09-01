@@ -1,6 +1,7 @@
 package com.anis.larp.ui.freemode
 
 import android.Manifest
+import androidx.test.espresso.Espresso.pressBack
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -176,6 +177,23 @@ class FreeModeScreenTest {
         composeRule.onNodeWithTag("learning_language_settings").assertIsDisplayed()
         composeRule.onNodeWithTag("model_settings_back").performClick()
         composeRule.onNodeWithText("larp").assertIsDisplayed()
+    }
+
+    @Test
+    fun androidBackReturnsFromSettingsToFreeMode() {
+        showFreeMode()
+
+        composeRule.onNodeWithTag("open_model_settings").performClick()
+        composeRule.onNodeWithText("Réglages").assertIsDisplayed()
+
+        pressBack()
+
+        composeRule.onNodeWithTag("navigation_Apprendre").assertIsSelected()
+        composeRule.onNodeWithTag("open_model_settings").assertIsDisplayed()
+        assertEquals(
+            0,
+            composeRule.onAllNodesWithText("Réglages").fetchSemanticsNodes().size
+        )
     }
 
     @Test
