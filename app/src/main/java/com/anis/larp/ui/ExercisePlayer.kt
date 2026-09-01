@@ -128,6 +128,10 @@ import com.anis.larp.learning.ExerciseCompletion
 import com.anis.larp.learning.LearnedWord
 import com.anis.larp.learning.LearningTarget
 import com.anis.larp.learning.LessonStep
+import com.anis.larp.ui.preview.LarpPhonePreviews
+import com.anis.larp.ui.preview.LarpPreviewData
+import com.anis.larp.ui.preview.LarpPreviewTheme
+import com.anis.larp.ui.preview.LarpTabletPreview
 import com.anis.larp.ui.theme.LarpMotion
 import java.text.Normalizer
 import java.util.Locale
@@ -1825,5 +1829,14 @@ private fun formatDuration(millis: Long): String {
         stringResource(R.string.exercise_minutes_seconds, minutes, seconds)
     } else {
         stringResource(R.string.exercise_seconds, seconds)
+    }
+}
+
+@LarpPhonePreviews
+@LarpTabletPreview
+@Composable
+private fun ExercisePlayerPreview() {
+    LarpPreviewTheme {
+        ExercisePlayer(exercise = LarpPreviewData.activeExercise)
     }
 }

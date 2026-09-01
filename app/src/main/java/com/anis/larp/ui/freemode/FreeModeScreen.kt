@@ -56,6 +56,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.anis.larp.ui.components.ExpressivePill
 import com.anis.larp.ui.components.VoiceOrb
+import com.anis.larp.ui.components.AppDestination
+import com.anis.larp.ui.preview.LarpPhonePreviews
+import com.anis.larp.ui.preview.LarpPreviewData
+import com.anis.larp.ui.preview.LarpPreviewTheme
+import com.anis.larp.ui.preview.LarpTabletPreview
+import com.anis.larp.ui.preview.PreviewDestinationFrame
 import kotlin.math.min
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -522,3 +528,18 @@ private fun SupportingActions() {
 }
 
 private const val MAX_FREE_TEXT_CHARACTERS = 2_000
+
+@LarpPhonePreviews
+@LarpTabletPreview
+@Composable
+private fun FreeModeScreenPreview() {
+    LarpPreviewTheme {
+        PreviewDestinationFrame(selectedDestination = AppDestination.LEARN) {
+            FreeModeScreen(
+                uiState = LarpPreviewData.freeModeState,
+                animationsEnabled = false,
+                onPrimaryAction = {}
+            )
+        }
+    }
+}

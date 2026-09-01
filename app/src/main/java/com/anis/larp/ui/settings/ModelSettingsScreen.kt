@@ -68,6 +68,10 @@ import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.QwenAsrModel
 import com.anis.larp.model.displayNameIn
 import com.anis.larp.ui.freemode.FreeModeSessionStore
+import com.anis.larp.ui.preview.LarpPhonePreviews
+import com.anis.larp.ui.preview.LarpPreviewData
+import com.anis.larp.ui.preview.LarpPreviewTheme
+import com.anis.larp.ui.preview.LarpTabletPreview
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -513,8 +517,8 @@ private fun SessionHistoryCard(
 }
 
 @Composable
-private fun AccelerationCard() {
-    val profile = remember { DeviceAccelerationProfile.detect() }
+private fun AccelerationCard(previewLabel: String? = null) {
+    val profileLabel = previewLabel ?: remember { DeviceAccelerationProfile.detect().label }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge,
@@ -536,7 +540,7 @@ private fun AccelerationCard() {
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    text = profile.label,
+                    text = profileLabel,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -658,4 +662,82 @@ private fun ModelSection(
         }
     }
     Spacer(Modifier.height(2.dp))
+}
+
+@LarpPhonePreviews
+@LarpTabletPreview
+@Composable
+private fun ModelSettingsScreenPreview() {
+    val models = LarpPreviewData.modelInventory
+    LarpPreviewTheme {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 40.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    FilledTonalIconButton(onClick = {}) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = "Retour"
+                        )
+                    }
+                    Column {
+                        Text("Réglages", style = MaterialTheme.typography.headlineMedium)
+                        Text(
+                            "Langue, voix, conversation et écoute",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                LearningLanguageCard(
+                    selected = LearningLanguage.SPANISH,
+                    onSelected = {}
+                )
+                AccelerationCard(previewLabel = "NPU · accélération locale")
+                SessionHistoryCard(sessionCount = 12, hasActiveSession = true)
+                ModelSection(
+                    title = "TTS · Voix",
+                    description = "Voix hors ligne installées pour Espagnol",
+                    icon = Icons.Rounded.RecordVoiceOver,
+                    options = models.ttsModels,
+                    selectedId = models.ttsModels.first().id,
+                    emptyMessage = "Aucune voix hors ligne compatible n'est installée.",
+                    onSelected = {}
+                )
+                ImportPromptModelCard(
+                    importing = false,
+                    error = null,
+                    onImport = {}
+                )
+                ModelSection(
+                    title = "Prompt · Professeur",
+                    description = "Le modèle réellement utilisé pour répondre",
+                    icon = Icons.Rounded.Memory,
+                    options = models.promptModels,
+                    selectedId = models.promptModels.first().id,
+                    emptyMessage = "Aucun modèle de prompt n'est prêt.",
+                    onSelected = {}
+                )
+                ModelSection(
+                    title = "STT · Écoute",
+                    description = "Reconnaissance installée pour Français",
+                    icon = Icons.Rounded.GraphicEq,
+                    options = models.sttModels,
+                    selectedId = models.sttModels.first().id,
+                    emptyMessage = "Aucun modèle STT n'est disponible.",
+                    onSelected = {}
+                )
+            }
+        }
+    }
 }

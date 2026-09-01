@@ -107,10 +107,16 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.Lesson
+import com.anis.larp.ui.components.AppDestination
 import com.anis.larp.ui.freemode.ChatMessageAuthor
 import com.anis.larp.ui.freemode.ConversationTurn
 import com.anis.larp.ui.freemode.GeneratedReply
 import com.anis.larp.ui.freemode.TutorChatMessage
+import com.anis.larp.ui.preview.LarpPhonePreviews
+import com.anis.larp.ui.preview.LarpPreviewData
+import com.anis.larp.ui.preview.LarpPreviewTheme
+import com.anis.larp.ui.preview.LarpTabletPreview
+import com.anis.larp.ui.preview.PreviewDestinationFrame
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -1713,6 +1719,79 @@ private const val MAX_IMPORTED_TEXT_LENGTH = 4_200
 private const val MAX_YOUTUBE_URL_LENGTH = 500
 private const val LEARNING_CONTENT_REMIX_REVEAL_FRACTION = 0.20f
 private const val LEARNING_CONTENT_ARCHIVE_REVEAL_FRACTION = 0.24f
+
+@LarpPhonePreviews
+@LarpTabletPreview
+@Composable
+private fun ExercisesLibraryPreview() {
+    LarpPreviewTheme {
+        PreviewDestinationFrame(selectedDestination = AppDestination.EXERCISES) {
+            ExercisesScreen(exercises = LarpPreviewData.exercises)
+        }
+    }
+}
+
+@LarpPhonePreviews
+@LarpTabletPreview
+@Composable
+private fun LessonsLibraryPreview() {
+    LarpPreviewTheme {
+        PreviewDestinationFrame(selectedDestination = AppDestination.LESSONS) {
+            LessonsScreen(lessons = LarpPreviewData.lessons)
+        }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun LessonDetailPreview() {
+    LarpPreviewTheme {
+        PreviewDestinationFrame(selectedDestination = AppDestination.LESSONS) {
+            LessonDetail(
+                lesson = LarpPreviewData.lessons.first(),
+                onBack = {},
+                onTopicFilterRequested = {},
+                onAskQuestion = { _, _, _, _ ->
+                    GeneratedReply(
+                        text = "Utilisez « Je voudrais… » pour formuler une demande polie.",
+                        locale = Locale.FRENCH,
+                        modelName = "Preview locale"
+                    )
+                }
+            )
+        }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun ProfileScreenPreview() {
+    LarpPreviewTheme {
+        PreviewDestinationFrame(selectedDestination = AppDestination.PROFILE) {
+            ProfileScreen(
+                dictionaryOpen = false,
+                onOpenDictionary = {},
+                onCloseDictionary = {},
+                exercises = LarpPreviewData.exercises
+            )
+        }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun DictionaryScreenPreview() {
+    LarpPreviewTheme {
+        PreviewDestinationFrame(selectedDestination = AppDestination.PROFILE) {
+            ProfileScreen(
+                dictionaryOpen = true,
+                onOpenDictionary = {},
+                onCloseDictionary = {},
+                exercises = LarpPreviewData.exercises
+            )
+        }
+    }
+}
 
 @Composable
 fun ProfileScreen(

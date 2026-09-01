@@ -30,6 +30,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.work.WorkInfo
 import com.anis.larp.model.ModelDownloadWorker
+import com.anis.larp.ui.preview.LarpPhonePreviews
+import com.anis.larp.ui.preview.LarpPreviewTheme
 
 @Composable
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -133,5 +135,32 @@ internal fun ModelReadinessScreen(
                 Text("Changer de modèles", modifier = Modifier.padding(start = 8.dp))
             }
         }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun ModelReadinessLoadingPreview() {
+    LarpPreviewTheme {
+        ModelReadinessScreen(
+            downloads = emptyList(),
+            statusMessage = "Chargement de Gemma 4 sur le NPU…",
+            onRetry = {},
+            onOpenSettings = {}
+        )
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun ModelReadinessErrorPreview() {
+    LarpPreviewTheme {
+        ModelReadinessScreen(
+            downloads = emptyList(),
+            statusMessage = "Préparation des modèles…",
+            errorMessage = "Le modèle sélectionné n'est pas disponible sur cet appareil.",
+            onRetry = {},
+            onOpenSettings = {}
+        )
     }
 }

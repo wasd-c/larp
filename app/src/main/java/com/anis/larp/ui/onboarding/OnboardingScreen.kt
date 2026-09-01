@@ -67,6 +67,9 @@ import com.anis.larp.model.commonNativeLanguages
 import com.anis.larp.model.displayNameIn
 import com.anis.larp.model.parseHuggingFaceModelReference
 import com.anis.larp.ui.components.ExpressivePill
+import com.anis.larp.ui.preview.LarpPhonePreviews
+import com.anis.larp.ui.preview.LarpPreviewTheme
+import com.anis.larp.ui.preview.LarpTabletPreview
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -1056,4 +1059,110 @@ private fun StepTitle(
         style = MaterialTheme.typography.bodyLarge,
         textAlign = TextAlign.Center
     )
+}
+
+@Composable
+private fun OnboardingStepPreviewFrame(
+    step: OnboardingStep,
+    content: @Composable () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            OnboardingHeader(
+                step = step,
+                onBack = if (step == OnboardingStep.NATIVE_LANGUAGE) null else ({})
+            )
+            Spacer(Modifier.height(30.dp))
+            content()
+        }
+    }
+}
+
+@LarpPhonePreviews
+@LarpTabletPreview
+@Composable
+private fun NativeLanguageOnboardingPreview() {
+    LarpPreviewTheme {
+        OnboardingStepPreviewFrame(step = OnboardingStep.NATIVE_LANGUAGE) {
+            NativeLanguageStep(
+                deviceLocale = Locale.FRENCH,
+                selectedLanguageTag = "fr-FR",
+                correcting = false,
+                onSelected = {},
+                onCorrect = {},
+                onConfirm = {}
+            )
+        }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun TargetLanguageOnboardingPreview() {
+    LarpPreviewTheme {
+        OnboardingStepPreviewFrame(step = OnboardingStep.TARGET_LANGUAGE) {
+            TargetLanguageStep(
+                selected = LearningLanguage.SPANISH,
+                onSelected = {},
+                onContinue = {}
+            )
+        }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun SpeechRecognitionOnboardingPreview() {
+    LarpPreviewTheme {
+        OnboardingStepPreviewFrame(step = OnboardingStep.SPEECH_RECOGNITION) {
+            SpeechRecognitionStep(
+                selected = AsrChoice.QWEN,
+                qwenAvailable = false,
+                onSelected = {},
+                advancedExpanded = false,
+                onAdvancedExpandedChange = {},
+                importingQwenFiles = false,
+                qwenImportError = null,
+                onPickQwenFiles = {},
+                onContinue = {}
+            )
+        }
+    }
+}
+
+@LarpPhonePreviews
+@Composable
+private fun PromptModelOnboardingPreview() {
+    LarpPreviewTheme {
+        OnboardingStepPreviewFrame(step = OnboardingStep.PROMPT_MODEL) {
+            PromptModelStep(
+                selected = PromptChoice.GEMMA_4,
+                onSelected = {},
+                advancedExpanded = false,
+                onAdvancedExpandedChange = {},
+                advancedSource = AdvancedSource.HUGGING_FACE,
+                onAdvancedSourceSelected = {},
+                customRepository = PromptModelCatalog.GEMMA_4_REPOSITORY,
+                onCustomRepositoryChanged = {},
+                importedModel = null,
+                importingFile = false,
+                importError = null,
+                onPickFile = {},
+                accelerationLabel = "NPU",
+                sharedGemmaAvailable = false,
+                speculativeDecoding = false,
+                isArtifactSupported = { true },
+                onContinue = {}
+            )
+        }
+    }
 }
