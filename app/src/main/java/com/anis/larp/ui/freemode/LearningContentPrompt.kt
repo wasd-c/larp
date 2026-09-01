@@ -179,14 +179,18 @@ internal fun requestedLearningContentKind(
     conversationHistory: List<ConversationTurn> = emptyList()
 ): LearningContentRequestKind? {
     val normalized = transcript.normalizedForIntent()
-    val requestsCreation = CREATION_REQUEST_MARKERS.any { it.containsMatchIn(normalized) }
+    val implicitExerciseRequest = DIRECT_TUTORING_REQUEST_MARKERS.any {
+        it.containsMatchIn(normalized)
+    }
+    val requestsCreation = implicitExerciseRequest ||
+        CREATION_REQUEST_MARKERS.any { it.containsMatchIn(normalized) }
     if (!requestsCreation) return null
 
     val directKind = contentKindMentionedIn(normalized)
     if (directKind != null) return directKind
 
     // Resolve short follow-ups such as "Oui, crée-le" from the recent turns.
-    return conversationHistory
+    val recentKind = conversationHistory
         .asReversed()
         .asSequence()
         .mapNotNull { turn ->
@@ -195,6 +199,22 @@ internal fun requestedLearningContentKind(
             )
         }
         .firstOrNull()
+    return recentKind ?: if (implicitExerciseRequest) {
+        LearningContentRequestKind.EXERCISE
+    } else {
+        null
+    }
+}
+
+internal fun learningContentKindFromRawToolCall(
+    rawReply: String
+): LearningContentRequestKind? = if (
+    RAW_LEARNING_CONTENT_TOOL_NAME.containsMatchIn(rawReply) &&
+    containsRawToolCallProtocol(rawReply)
+) {
+    LearningContentRequestKind.EXERCISE
+} else {
+    null
 }
 
 internal fun learningContentPrompt(
@@ -419,6 +439,14 @@ private val LESSON_NOUNS = Regex(
 private val CREATION_REQUEST_MARKERS = listOf(
     Regex("""\b(?:cree|creer|create|make|prepare|prepare-moi|generate|build|add|save|fais|faire|donne|give|want|veux|voudrais|aimerais|haz|crea|crear|quiero|prepara|genera)\b"""),
     Regex("""만들|생성|추가|创建|建立|生成|给我|給我""")
+)
+private val DIRECT_TUTORING_REQUEST_MARKERS = listOf(
+    Regex("""\b(?:apprends|enseigne)(?:-|\s+)moi\b"""),
+    Regex("""\bteach\s+me\b"""),
+    Regex("""\bensen\p{L}*me\b""")
+)
+private val RAW_LEARNING_CONTENT_TOOL_NAME = Regex(
+    """(?i)\bsubmit[_-]?lesson[_-]?content\b"""
 )
 private val COMPLETION_CLAIM_MARKERS = listOf(
     Regex("""\b(?:created|saved|added|creating|will create|have made|cree|creee|enregistre|creation|vais creer|va creer|is ready|est pret|est prete)\b"""),

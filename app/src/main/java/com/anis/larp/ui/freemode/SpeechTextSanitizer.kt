@@ -10,6 +10,12 @@ import java.util.Locale
  * future prompt or parser change cannot make metadata audible.
  */
 internal fun sanitizeTextForSpeech(rawText: String): String {
+    if (
+        containsRawToolCallProtocol(rawText) &&
+        rawText.lineSequence().none(::isExplicitReplyLine)
+    ) {
+        return ""
+    }
     val spokenLines = rawText.lineSequence()
         .mapNotNull(::sanitizeSpeechLine)
         .toList()
@@ -24,6 +30,13 @@ internal fun sanitizeTextForSpeech(rawText: String): String {
         .replace(excessBlankLinesRegex, "\n")
         .trim(' ', '\t', '\n', ',', ';', ':', '-', '—', '–')
 }
+
+internal fun containsRawToolCallProtocol(rawText: String): Boolean =
+    rawToolCallMarkerRegex.containsMatchIn(rawText) ||
+        rawToolFunctionRegex.containsMatchIn(rawText)
+
+private fun isExplicitReplyLine(line: String): Boolean =
+    line.trimStart().startsWith("REPLY:", ignoreCase = true)
 
 private fun sanitizeSpeechLine(rawLine: String): String? {
     var line = rawLine
@@ -175,3 +188,7 @@ private val audibleProtocolLabelRegex = Regex(
 private val spacesBeforePunctuationRegex = Regex("""\s+([,.!?;:])""")
 private val repeatedHorizontalWhitespaceRegex = Regex("""[\t ]{2,}""")
 private val excessBlankLinesRegex = Regex("""\n{2,}""")
+private val rawToolCallMarkerRegex = Regex("""(?i)<\/?tool_call>""")
+private val rawToolFunctionRegex = Regex(
+    """(?i)\bsubmit[_-]?lesson[_-]?content\s*\{"""
+)

@@ -57,5 +57,17 @@ class QwenAsrModelTest {
             sanitizeQwenTranscript("<ASR_TEXT>Good morning<|endoftext|>")
         )
         assertEquals("Good", sanitizeQwenTranscript("Good"))
+        assertEquals(
+            "",
+            sanitizeQwenTranscript(
+                "Transcrire l'audio à texte (langue: Française)."
+            )
+        )
+        assertEquals(
+            "",
+            sanitizeQwenTranscript(
+                "Transcribe audio to text (language: French)"
+            )
+        )
     }
 }

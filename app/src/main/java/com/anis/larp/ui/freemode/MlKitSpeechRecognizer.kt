@@ -216,7 +216,7 @@ class MlKitSpeechRecognizer(
                     }
                 }
             }
-            recognized.ifBlank {
+            sanitizeRecognizedSpeech(recognized).ifBlank {
                 throw IllegalStateException("Aucune parole n'a été reconnue.")
             }
         } finally {
@@ -611,14 +611,16 @@ class MlKitSpeechRecognizer(
 
     private suspend fun processUtterance() {
         val currentState = mutableState.value
-        val transcript = currentState.visibleTranscript
+        val rawTranscript = currentState.visibleTranscript
         if (
             processingUtterance ||
             currentState.phase != SpeechPhase.LISTENING ||
-            transcript.isBlank()
+            rawTranscript.isBlank()
         ) {
             return
         }
+
+        val transcript = sanitizeRecognizedSpeech(rawTranscript)
 
         processingUtterance = true
         val recognizer = activeRecognizer
@@ -628,6 +630,21 @@ class MlKitSpeechRecognizer(
         recognition?.cancel()
         runCatching { recognizer?.stopRecognition() }
         recognizer?.close()
+
+        if (transcript.isBlank()) {
+            mutableState.update {
+                it.copy(
+                    phase = SpeechPhase.PREPARING,
+                    committedTranscript = "",
+                    partialTranscript = "",
+                    conversationActive = conversationActive,
+                    statusMessage = "Aucune parole détectée, je vous réécoute…"
+                )
+            }
+            processingUtterance = false
+            scheduleListeningRestart(delayMillis = 400)
+            return
+        }
 
         val modelLabel = replyGenerator.selectedModelLabel()
         sessionStore.recordUserUtterance(

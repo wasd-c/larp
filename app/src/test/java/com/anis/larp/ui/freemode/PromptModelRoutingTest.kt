@@ -234,6 +234,24 @@ class PromptModelRoutingTest {
             LearningContentRequestKind.LESSON,
             requestedLearningContentKind("Prépare-moi une leçon sur les salutations.")
         )
+        assertEquals(
+            LearningContentRequestKind.EXERCISE,
+            requestedLearningContentKind(
+                "Apprends-moi à me présenter en chinois."
+            )
+        )
+    }
+
+    @Test
+    fun leakedNativeToolCallIsRoutedBackThroughVerifiedCreation() {
+        val rawReply =
+            "submit_lesson_content{c1:<|\\\">你好<|\\\">,i1:<|\\\">1<|\\\">}<tool_call>"
+
+        assertEquals(
+            LearningContentRequestKind.EXERCISE,
+            learningContentKindFromRawToolCall(rawReply)
+        )
+        assertEquals("", sanitizeTextForSpeech(rawReply))
     }
 
     @Test

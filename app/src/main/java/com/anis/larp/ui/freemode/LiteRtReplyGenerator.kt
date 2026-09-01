@@ -39,7 +39,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
     private var activeConversation: Conversation? = null
     private var activeConversationKey: String? = null
     private var activeConversationTurns = 0
-    private var conversationalActionExecuted = false
+    private var conversationalExecutedAction: LearningContentAction? = null
     private var conversationalActionCallback: (LearningContentAction) -> Unit = {}
 
     suspend fun preload(
@@ -108,14 +108,14 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                 contentLanguageTag = tutorContext.targetLanguage.toLanguageTag()
             ).copy(contentAction = null, contentActionAlreadyExecuted = false)
         } else {
-            conversationalActionExecuted = false
+            conversationalExecutedAction = null
             conversationalActionCallback = onContentActionExecuted
             val toolProvider = tool(
                 LearningContentToolSet(
                     LearningContentRepository.getInstance(applicationContext),
                     targetLanguageTag = tutorContext.targetLanguage.toLanguageTag(),
                     onActionExecuted = { action ->
-                        conversationalActionExecuted = true
+                        conversationalExecutedAction = action
                         conversationalActionCallback(action)
                     }
                 )
@@ -147,11 +147,59 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                     lessonContext = null
                 )
             )
-            parseGeneratedReply(
-                rawReply = rawReply,
-                fallbackLocale = tutorContext.targetLanguage,
-                contentLanguageTag = tutorContext.targetLanguage.toLanguageTag()
-            ).copy(contentActionAlreadyExecuted = conversationalActionExecuted)
+            val executedAction = conversationalExecutedAction
+            val unexecutedKind = if (executedAction == null) {
+                learningContentKindFromRawToolCall(rawReply)
+            } else {
+                null
+            }
+            when {
+                unexecutedKind != null -> {
+                    closeConversation()
+                    generateVerifiedLearningContentReply(
+                        kind = unexecutedKind,
+                        transcript = transcript,
+                        tutorContext = tutorContext,
+                        conversationHistory = conversationHistory,
+                        modelLabel = modelLabel,
+                        maxAttempts = 1
+                    ) { prompt ->
+                        generateRawReply(
+                            engine = engine,
+                            prompt = prompt,
+                            config = ConversationConfig(
+                                samplerConfig = compatibleLiteRtSamplerConfig()
+                            )
+                        )
+                    }
+                }
+                executedAction != null -> {
+                    val parsed = runCatching {
+                        parseGeneratedReply(
+                            rawReply = rawReply,
+                            fallbackLocale = tutorContext.nativeLanguage,
+                            contentLanguageTag = tutorContext.targetLanguage.toLanguageTag()
+                        )
+                    }.getOrElse {
+                        GeneratedReply(
+                            text = creationConfirmation(
+                                LearningContentRequestKind.EXERCISE,
+                                tutorContext.nativeLanguage
+                            ),
+                            locale = tutorContext.nativeLanguage
+                        )
+                    }
+                    parsed.copy(
+                        contentAction = executedAction,
+                        contentActionAlreadyExecuted = true
+                    )
+                }
+                else -> parseGeneratedReply(
+                    rawReply = rawReply,
+                    fallbackLocale = tutorContext.targetLanguage,
+                    contentLanguageTag = tutorContext.targetLanguage.toLanguageTag()
+                )
+            }
         }
         generatedReply.copy(
             modelName = modelLabel,
@@ -553,7 +601,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
         activeConversation = null
         activeConversationKey = null
         activeConversationTurns = 0
-        conversationalActionExecuted = false
+        conversationalExecutedAction = null
         conversationalActionCallback = {}
     }
 
