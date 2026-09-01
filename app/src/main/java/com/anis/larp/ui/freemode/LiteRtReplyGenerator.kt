@@ -20,6 +20,7 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.tool
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -92,7 +93,8 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                             Message.user(turn.userMessage),
                             Message.model(turn.assistantMessage)
                         )
-                    }
+                    },
+                    samplerConfig = compatibleLiteRtSamplerConfig()
                 ),
                 conversationKey = conversationKey(
                     recognitionLocale = recognitionLocale,
@@ -136,6 +138,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                         )
                     },
                     tools = listOf(toolProvider),
+                    samplerConfig = compatibleLiteRtSamplerConfig(),
                     automaticToolCalling = true
                 ),
                 conversationKey = conversationKey(
@@ -201,6 +204,7 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
                         )
                     },
                     tools = listOf(toolProvider),
+                    samplerConfig = compatibleLiteRtSamplerConfig(),
                     automaticToolCalling = true
                 )
             )
@@ -237,7 +241,9 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
             generateRawReply(
                 engine = engine,
                 prompt = prompt,
-                config = ConversationConfig()
+                config = ConversationConfig(
+                    samplerConfig = compatibleLiteRtSamplerConfig()
+                )
             )
         }
     }
@@ -565,6 +571,18 @@ class LiteRtReplyGenerator(context: Context) : AutoCloseable {
 
 internal const val LITERT_TOTAL_CONTEXT_TOKENS = 8_192
 internal const val LITERT_NPU_CONTEXT_TOKENS = 4_096
+
+/**
+ * Some single-output-head LiteRT GPU artifacts ship sampler metadata with
+ * topK=64. LiteRT-LM rejects that combination before the first token is
+ * generated, so every conversation supplies an explicit compatible sampler.
+ */
+internal fun compatibleLiteRtSamplerConfig() = SamplerConfig(
+    topK = 1,
+    topP = 0.95,
+    temperature = 1.0,
+    seed = 0
+)
 
 private data class BackendCandidate(
     val backend: Backend,

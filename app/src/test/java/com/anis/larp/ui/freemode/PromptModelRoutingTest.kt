@@ -20,6 +20,16 @@ import org.junit.Test
 
 class PromptModelRoutingTest {
     @Test
+    fun liteRtSamplerSupportsSingleOutputHeadArtifacts() {
+        val sampler = compatibleLiteRtSamplerConfig()
+
+        assertEquals(1, sampler.topK)
+        assertEquals(0.95, sampler.topP, 0.0)
+        assertEquals(1.0, sampler.temperature, 0.0)
+        assertEquals(0, sampler.seed)
+    }
+
+    @Test
     fun modelContextKeepsOnlyRecentTurnsWithinTheLocalBudget() {
         val turns = (0 until 6).map { index ->
             ConversationTurn("user-$index", "assistant-$index")
