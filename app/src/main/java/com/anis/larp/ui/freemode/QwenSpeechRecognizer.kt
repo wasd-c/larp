@@ -365,11 +365,13 @@ internal fun sanitizeQwenTranscript(rawText: String): String {
     } else {
         rawText
     }
-    return transcription
+    return sanitizeRecognizedSpeech(
+        transcription
         .replace(Regex("</?asr_text>", RegexOption.IGNORE_CASE), " ")
         .replace(Regex("<\\|[^>]+\\|>"), " ")
         .replace(Regex("\\s+"), " ")
         .trim()
+    )
 }
 
 internal fun qwenLanguageHint(locale: Locale): String = when (
