@@ -226,6 +226,42 @@ class FreeModeUiStateTest {
     }
 
     @Test
+    fun chineseInlinePinyinAndOneBasedIndexesAreNormalized() {
+        val action = parseLearningContentAction(
+            rawReply = """
+                ACTION: SUBMIT_LESSON_CONTENT
+                ACTION_TOPIC: Présentations
+                ACTION_X1: 你好 (nǐ hǎo)
+                ACTION_M1: Bonjour
+                ACTION_R1: NONE
+                ACTION_X2: 我是 (wǒ shì)
+                ACTION_M2: Je suis
+                ACTION_R2: NONE
+                ACTION_X3: 叫 (jiào)
+                ACTION_M3: S'appeler
+                ACTION_R3: NONE
+                ACTION_S1: 你好，我是张三。
+                ACTION_SM1: Bonjour, je suis Zhang San.
+                ACTION_I1: 1,2,3
+                ACTION_C1: 你好 / 我是张三
+                ACTION_S2: 我叫李四。
+                ACTION_SM2: Je m'appelle Li Si.
+                ACTION_I2: 2,3
+                ACTION_C2: 我叫李四
+            """.trimIndent(),
+            fallbackLanguageTag = "zh-Hans-CN"
+        ) as LearningContentAction.CreateLessonContent
+
+        assertEquals(listOf("你好", "我是", "叫"), action.content.targets.map { it.text })
+        assertEquals(
+            listOf("nǐ hǎo", "wǒ shì", "jiào"),
+            action.content.targets.map { it.reading }
+        )
+        assertEquals(listOf(0, 1), action.content.sentences[0].targetIndexes)
+        assertEquals(listOf(2), action.content.sentences[1].targetIndexes)
+    }
+
+    @Test
     fun legacyGeneratedExerciseAndLessonProtocolsAreRejected() {
         assertEquals(
             null,

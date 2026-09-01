@@ -222,7 +222,8 @@ internal fun learningContentPrompt(
     transcript: String,
     tutorContext: TutorContext,
     conversationHistory: List<ConversationTurn> = emptyList(),
-    retry: Boolean = false
+    retry: Boolean = false,
+    previousFailure: String? = null
 ): String {
     val history = conversationHistory
         .takeLast(MAX_CREATION_HISTORY_TURNS)
@@ -231,7 +232,21 @@ internal fun learningContentPrompt(
         }
         .ifBlank { "No earlier turns." }
     val retryInstruction = if (retry) {
-        "A previous attempt was incomplete. Every required ACTION field below is mandatory."
+        val failure = previousFailure
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.take(MAX_RETRY_FEEDBACK_LENGTH)
+            ?.takeIf(String::isNotBlank)
+        buildString {
+            append(
+                "A previous attempt was incomplete. Regenerate every ACTION field from scratch. " +
+                    "Every required ACTION field below is mandatory."
+            )
+            failure?.let {
+                append(" The app rejected it because: ")
+                append(it)
+            }
+        }
     } else {
         "Create the requested content now. Do not ask another question."
     }
@@ -297,12 +312,10 @@ internal suspend fun generateVerifiedLearningContentReply(
     tutorContext: TutorContext,
     conversationHistory: List<ConversationTurn>,
     modelLabel: String,
-    maxAttempts: Int = MAX_CREATION_ATTEMPTS,
     generateRawReply: suspend (String) -> String
 ): GeneratedReply {
-    require(maxAttempts > 0) { "Au moins une tentative de génération est requise." }
     var lastFailure: Throwable? = null
-    repeat(maxAttempts) { attempt ->
+    repeat(MAX_CREATION_ATTEMPTS) { attempt ->
         val rawReply = try {
             generateRawReply(
                 learningContentPrompt(
@@ -310,7 +323,8 @@ internal suspend fun generateVerifiedLearningContentReply(
                     transcript = transcript,
                     tutorContext = tutorContext,
                     conversationHistory = conversationHistory,
-                    retry = attempt > 0
+                    retry = attempt > 0,
+                    previousFailure = lastFailure?.message
                 )
             )
         } catch (cancellation: CancellationException) {
@@ -362,7 +376,7 @@ internal suspend fun generateVerifiedLearningContentReply(
 
     throw IllegalStateException(
         "$modelLabel n'a pas fourni ${kind.frenchObjectWithAdjective()} après " +
-            "$maxAttempts tentative${if (maxAttempts > 1) "s" else ""}. Rien n'a été enregistré.",
+            "$MAX_CREATION_ATTEMPTS tentatives. Rien n'a été enregistré.",
         lastFailure
     )
 }
@@ -455,6 +469,7 @@ private val COMPLETION_CLAIM_MARKERS = listOf(
 private val COMBINING_MARKS = Regex("""\p{M}+""")
 private const val MAX_CREATION_HISTORY_TURNS = 1
 private const val MAX_CREATION_ATTEMPTS = 2
+private const val MAX_RETRY_FEEDBACK_LENGTH = 500
 private const val MAX_REMIX_GUIDANCE_LENGTH = 1_000
 private const val MAX_IMPORTED_SOURCE_LENGTH = 4_200
 private const val MIN_IMPORTED_SOURCE_LENGTH = 40

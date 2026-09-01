@@ -4,6 +4,8 @@ import com.anis.larp.learning.LearningTopics
 import com.anis.larp.learning.ExercisePlan
 import com.anis.larp.learning.LearnedWord
 import com.anis.larp.learning.decodeExerciseChoices
+import com.anis.larp.learning.normalizedGeneratedTarget
+import com.anis.larp.learning.normalizeGeneratedTargetIndexes
 import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.prompt.Generation
@@ -189,20 +191,23 @@ internal fun parseLearningContentAction(
                 com.anis.larp.learning.explicitLessonContent(
                     topic = fields.requireActionField("ACTION_TOPIC"),
                     targets = listOf(
-                        com.anis.larp.learning.LearningTarget(
-                            fields.requireActionField("ACTION_X1"),
-                            fields.requireActionField("ACTION_M1"),
-                            fields.optionalActionField("ACTION_R1")
+                        normalizedGeneratedTarget(
+                            text = fields.requireActionField("ACTION_X1"),
+                            meaning = fields.requireActionField("ACTION_M1"),
+                            reading = fields.optionalActionField("ACTION_R1"),
+                            languageTag = fallbackLanguageTag
                         ),
-                        com.anis.larp.learning.LearningTarget(
-                            fields.requireActionField("ACTION_X2"),
-                            fields.requireActionField("ACTION_M2"),
-                            fields.optionalActionField("ACTION_R2")
+                        normalizedGeneratedTarget(
+                            text = fields.requireActionField("ACTION_X2"),
+                            meaning = fields.requireActionField("ACTION_M2"),
+                            reading = fields.optionalActionField("ACTION_R2"),
+                            languageTag = fallbackLanguageTag
                         ),
-                        com.anis.larp.learning.LearningTarget(
-                            fields.requireActionField("ACTION_X3"),
-                            fields.requireActionField("ACTION_M3"),
-                            fields.optionalActionField("ACTION_R3")
+                        normalizedGeneratedTarget(
+                            text = fields.requireActionField("ACTION_X3"),
+                            meaning = fields.requireActionField("ACTION_M3"),
+                            reading = fields.optionalActionField("ACTION_R3"),
+                            languageTag = fallbackLanguageTag
                         )
                     ),
                     sentences = listOf(
@@ -222,7 +227,7 @@ internal fun parseLearningContentAction(
                 )
             }
             val content = validator.repair(
-                requested,
+                normalizeGeneratedTargetIndexes(requested),
                 fallbackLanguageTag
             )
             val validation = validator.validate(content, fallbackLanguageTag)

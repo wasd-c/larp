@@ -44,9 +44,9 @@ class LearningContentToolSet(
         val requested = explicitLessonContent(
             topic = t,
             targets = listOf(
-                LearningTarget(x1, m1, r1.optionalGeneratedValue()),
-                LearningTarget(x2, m2, r2.optionalGeneratedValue()),
-                LearningTarget(x3, m3, r3.optionalGeneratedValue())
+                normalizedGeneratedTarget(x1, m1, r1, languageTag),
+                normalizedGeneratedTarget(x2, m2, r2, languageTag),
+                normalizedGeneratedTarget(x3, m3, r3, languageTag)
             ),
             sentences = listOf(
                 explicitSentence(s1, sm1, i1, c1),
@@ -54,7 +54,10 @@ class LearningContentToolSet(
             )
         )
         val validator = LessonContentValidator()
-        val content = validator.repair(requested, languageTag)
+        val content = validator.repair(
+            normalizeGeneratedTargetIndexes(requested),
+            languageTag
+        )
         val validation = validator.validate(content, languageTag)
         require(validation is LessonContentValidation.Valid) {
             (validation as LessonContentValidation.Invalid).reasons.joinToString("; ")
@@ -109,6 +112,61 @@ fun explicitSentence(
 private fun String.optionalGeneratedValue(): String? = trim()
     .takeIf(String::isNotBlank)
     ?.takeUnless { it.equals("NONE", ignoreCase = true) }
+
+/**
+ * Small local models commonly put Chinese reading aids directly after the Han
+ * target even when the schema provides a separate reading field. Preserve the
+ * linguistic information while restoring the canonical split expected by the
+ * validator and deterministic lesson compiler.
+ */
+internal fun normalizedGeneratedTarget(
+    text: String,
+    meaning: String,
+    reading: String?,
+    languageTag: String
+): LearningTarget {
+    val cleanText = text.trim()
+    val explicitReading = reading.orEmpty().optionalGeneratedValue()
+    if (!isChineseLanguageTag(languageTag) || explicitReading != null) {
+        return LearningTarget(cleanText, meaning.trim(), explicitReading)
+    }
+
+    val (targetText, inlineReading) = splitInlineChineseReading(cleanText)
+        ?: return LearningTarget(cleanText, meaning.trim())
+    return LearningTarget(targetText, meaning.trim(), inlineReading)
+}
+
+private fun splitInlineChineseReading(text: String): Pair<String, String>? {
+    val pair = CHINESE_READING_DELIMITERS.firstNotNullOfOrNull { (opening, closing) ->
+        if (!text.endsWith(closing)) return@firstNotNullOfOrNull null
+        val openingIndex = text.lastIndexOf(opening)
+        if (openingIndex <= 0) return@firstNotNullOfOrNull null
+        val target = text.substring(0, openingIndex).trim()
+        val reading = text.substring(openingIndex + 1, text.lastIndex).trim()
+        (target to reading).takeIf {
+            containsHanCharacters(target) && reading.codePoints().anyMatch { codePoint ->
+                Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.LATIN
+            }
+        }
+    }
+    return pair
+}
+
+private val CHINESE_READING_DELIMITERS = listOf('(' to ')', '（' to '）')
+
+/** Converts the common 1..N model convention before the app validates 0..N-1 indexes. */
+internal fun normalizeGeneratedTargetIndexes(content: LessonContent): LessonContent {
+    val generatedIndexes = content.sentences.flatMap(LearningSentence::targetIndexes)
+    val appearsOneBased = generatedIndexes.isNotEmpty() &&
+        0 !in generatedIndexes &&
+        generatedIndexes.all { it in 1..content.targets.size }
+    if (!appearsOneBased) return content
+    return content.copy(
+        sentences = content.sentences.map { sentence ->
+            sentence.copy(targetIndexes = sentence.targetIndexes.map { it - 1 })
+        }
+    )
+}
 
 fun decodeLessonContent(topic: String, targets: String, sentences: String): LessonContent =
     LessonContent(
