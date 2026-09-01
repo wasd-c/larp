@@ -8,6 +8,7 @@ import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
 import com.anis.larp.model.QwenAsrModel
+import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -34,20 +35,24 @@ class QwenSpeechRecognizer private constructor(context: Context) {
     @Volatile private var serverPort: Int? = null
     @Volatile private var serverReady = false
     @Volatile private var activeRecorder: AudioRecord? = null
+    @Volatile private var activeConnection: HttpURLConnection? = null
     @Volatile private var recentServerLog = ""
 
     suspend fun preload(onStatus: (String) -> Unit = {}) {
         ensureServer(onStatus)
     }
 
-    suspend fun recognize(
-        locale: Locale,
-        onListening: () -> Unit = {}
-    ): String {
+    internal suspend fun recognize(
+        locale: Locale?,
+        onListening: () -> Unit = {},
+        onTranscribing: () -> Unit = {},
+        onPartialTranscript: (String) -> Unit = {}
+    ): QwenRecognitionResult {
         ensureServer()
         val wav = recordUtterance(onListening)
         return try {
-            transcribe(wav, locale)
+            onTranscribing()
+            transcribe(wav, locale, onPartialTranscript)
         } finally {
             wav.delete()
         }
@@ -57,6 +62,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
         activeRecorder?.let { recorder ->
             runCatching { recorder.stop() }
         }
+        activeConnection?.disconnect()
     }
 
     /** Releases the native ASR process when another STT engine is selected. */
@@ -252,7 +258,11 @@ class QwenSpeechRecognizer private constructor(context: Context) {
         return file
     }
 
-    private suspend fun transcribe(wav: File, locale: Locale): String =
+    private suspend fun transcribe(
+        wav: File,
+        locale: Locale?,
+        onPartialTranscript: (String) -> Unit
+    ): QwenRecognitionResult =
         runInterruptible(Dispatchers.IO) {
             val port = checkNotNull(serverPort)
             val boundary = "larp-${System.nanoTime()}"
@@ -264,10 +274,12 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                 connection.doOutput = true
                 connection.connectTimeout = 5_000
                 connection.readTimeout = 120_000
+                connection.setRequestProperty("Accept", "text/event-stream")
                 connection.setRequestProperty(
                     "Content-Type",
                     "multipart/form-data; boundary=$boundary"
                 )
+                activeConnection = connection
                 connection.outputStream.buffered().use { output ->
                     fun field(name: String, value: String) {
                         output.write("--$boundary\r\n".toByteArray())
@@ -277,10 +289,9 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                         output.write(value.toByteArray())
                         output.write("\r\n".toByteArray())
                     }
-                    field("language", qwenLanguageHint(locale))
-                    field("response_format", "json")
-                    field("temperature", "0")
-                    field("max_tokens", "256")
+                    qwenTranscriptionFields(locale).forEach { (name, value) ->
+                        field(name, value)
+                    }
                     output.write("--$boundary\r\n".toByteArray())
                     output.write(
                         ("Content-Disposition: form-data; name=\"file\"; " +
@@ -291,21 +302,82 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                     output.write("\r\n--$boundary--\r\n".toByteArray())
                 }
                 val responseCode = connection.responseCode
-                val body = (if (responseCode in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                }).bufferedReader().use { it.readText() }
                 if (responseCode !in 200..299) {
+                    val body = connection.errorStream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        .orEmpty()
                     throw IOException("Qwen ASR a répondu $responseCode : ${body.take(300)}")
                 }
-                sanitizeQwenTranscript(JSONObject(body).optString("text")).ifBlank {
+                val result = if (
+                    connection.contentType.orEmpty().contains(
+                        "text/event-stream",
+                        ignoreCase = true
+                    )
+                ) {
+                    readStreamingTranscription(
+                        reader = connection.inputStream.bufferedReader(),
+                        forcedLocale = locale,
+                        onPartialTranscript = onPartialTranscript
+                    )
+                } else {
+                    val body = connection.inputStream.bufferedReader().use { it.readText() }
+                    parseQwenTranscript(
+                        rawText = JSONObject(body).optString("text"),
+                        forcedLocale = locale
+                    )
+                }
+                result.takeIf { it.text.isNotBlank() } ?: run {
                     throw IOException("Qwen ASR n'a renvoyé aucune transcription.")
                 }
             } finally {
+                if (activeConnection === connection) activeConnection = null
                 connection.disconnect()
             }
         }
+
+    private fun readStreamingTranscription(
+        reader: BufferedReader,
+        forcedLocale: Locale?,
+        onPartialTranscript: (String) -> Unit
+    ): QwenRecognitionResult = reader.use {
+        val rawTranscript = StringBuilder()
+        var finalRawTranscript = ""
+        var lastVisibleTranscript = ""
+        while (true) {
+            val line = it.readLine() ?: break
+            if (!line.startsWith(SSE_DATA_PREFIX)) continue
+            val payload = line.removePrefix(SSE_DATA_PREFIX).trim()
+            if (payload.isBlank() || payload == SSE_DONE) continue
+
+            val event = JSONObject(payload)
+            event.optJSONObject("error")?.let { error ->
+                throw IOException(
+                    error.optString("message").ifBlank { "Qwen ASR a interrompu la transcription." }
+                )
+            }
+            when (event.optString("type")) {
+                "transcript.text.delta" -> rawTranscript.append(event.optString("delta"))
+                "transcript.text.done" -> {
+                    finalRawTranscript = event.optString("text")
+                }
+            }
+
+            val visibleTranscript = qwenVisiblePartialTranscript(rawTranscript.toString())
+            if (
+                visibleTranscript.isNotBlank() &&
+                visibleTranscript != lastVisibleTranscript
+            ) {
+                lastVisibleTranscript = visibleTranscript
+                onPartialTranscript(visibleTranscript)
+            }
+        }
+
+        parseQwenTranscript(
+            rawText = finalRawTranscript.ifBlank { rawTranscript.toString() },
+            forcedLocale = forcedLocale
+        )
+    }
 
     private suspend fun isHealthy(port: Int): Boolean = withContext(Dispatchers.IO) {
         isHealthyBlocking(port)
@@ -336,6 +408,8 @@ class QwenSpeechRecognizer private constructor(context: Context) {
         private const val TAG = "QwenSpeechRecognizer"
         private const val SERVER_LIBRARY_NAME = "libllama-qwen-server.so"
         private const val LOOPBACK_HOST = "127.0.0.1"
+        private const val SSE_DATA_PREFIX = "data:"
+        private const val SSE_DONE = "[DONE]"
         private const val SAMPLE_RATE = 16_000
         private const val FRAME_SAMPLES = 320
         private const val SPEECH_PEAK_THRESHOLD = 700
@@ -357,21 +431,59 @@ class QwenSpeechRecognizer private constructor(context: Context) {
     }
 }
 
-internal fun sanitizeQwenTranscript(rawText: String): String {
+internal data class QwenRecognitionResult(
+    val text: String,
+    val detectedLocale: Locale?
+)
+
+internal fun parseQwenTranscript(
+    rawText: String,
+    forcedLocale: Locale? = null
+): QwenRecognitionResult {
     val marker = "<asr_text>"
     val markerIndex = rawText.indexOf(marker, ignoreCase = true)
+    val detectedLanguage = if (markerIndex >= 0) {
+        QWEN_LANGUAGE_METADATA.find(rawText.substring(0, markerIndex))
+            ?.groupValues
+            ?.getOrNull(1)
+    } else {
+        null
+    }
     val transcription = if (markerIndex >= 0) {
         rawText.substring(markerIndex + marker.length)
     } else {
         rawText
     }
-    return sanitizeRecognizedSpeech(
-        transcription
-        .replace(Regex("</?asr_text>", RegexOption.IGNORE_CASE), " ")
-        .replace(Regex("<\\|[^>]+\\|>"), " ")
-        .replace(Regex("\\s+"), " ")
-        .trim()
+    return QwenRecognitionResult(
+        text = sanitizeRecognizedSpeech(
+            transcription
+                .replace(Regex("</?asr_text>", RegexOption.IGNORE_CASE), " ")
+                .replace(Regex("<\\|[^>]+\\|>"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        ),
+        detectedLocale = forcedLocale ?: detectedLanguage?.let(::qwenLocaleForLanguage)
     )
+}
+
+internal fun sanitizeQwenTranscript(rawText: String): String =
+    parseQwenTranscript(rawText).text
+
+internal fun qwenVisiblePartialTranscript(rawText: String): String {
+    val normalized = rawText.trim().lowercase(Locale.ROOT)
+    if (
+        !rawText.contains("<asr_text>", ignoreCase = true) &&
+        isQwenLanguageMetadataPrefix(normalized)
+    ) return ""
+    return sanitizeQwenTranscript(rawText)
+}
+
+internal fun qwenTranscriptionFields(locale: Locale?): Map<String, String> = buildMap {
+    locale?.let { put("language", qwenLanguageHint(it)) }
+    put("response_format", "json")
+    put("stream", "true")
+    put("temperature", "0")
+    put("max_tokens", "256")
 }
 
 internal fun qwenLanguageHint(locale: Locale): String = when (
@@ -390,4 +502,56 @@ internal fun qwenLanguageHint(locale: Locale): String = when (
     "nl" -> "Dutch"
     "ru" -> "Russian"
     else -> locale.getDisplayLanguage(Locale.ENGLISH).ifBlank { "English" }
+}
+
+private fun qwenLocaleForLanguage(language: String): Locale? = when (
+    language.trim().substringBefore(',').lowercase(Locale.ROOT)
+) {
+    "chinese" -> Locale.SIMPLIFIED_CHINESE
+    "english" -> Locale.US
+    "french" -> Locale.FRANCE
+    "spanish" -> Locale.forLanguageTag("es-ES")
+    "german" -> Locale.GERMANY
+    "italian" -> Locale.ITALY
+    "portuguese" -> Locale.forLanguageTag("pt-PT")
+    "japanese" -> Locale.JAPAN
+    "korean" -> Locale.KOREA
+    "arabic" -> Locale.forLanguageTag("ar-SA")
+    "dutch" -> Locale.forLanguageTag("nl-NL")
+    "russian" -> Locale.forLanguageTag("ru-RU")
+    "cantonese" -> Locale.forLanguageTag("yue-HK")
+    else -> null
+}
+
+private val QWEN_LANGUAGE_METADATA = Regex(
+    pattern = "(?:^|\\R)\\s*language\\s+([^<\\r\\n]+)",
+    option = RegexOption.IGNORE_CASE
+)
+private const val QWEN_PROTOCOL_PREFIX = "language "
+private val QWEN_LANGUAGE_NAMES = setOf(
+    "chinese",
+    "english",
+    "french",
+    "spanish",
+    "german",
+    "italian",
+    "portuguese",
+    "japanese",
+    "korean",
+    "arabic",
+    "dutch",
+    "russian",
+    "cantonese"
+)
+
+private fun isQwenLanguageMetadataPrefix(text: String): Boolean {
+    if (text.isEmpty()) return false
+    if (QWEN_PROTOCOL_PREFIX.startsWith(text)) return true
+    if (!text.startsWith(QWEN_PROTOCOL_PREFIX)) return false
+    val languagePrefix = text.removePrefix(QWEN_PROTOCOL_PREFIX).trim()
+    return QWEN_LANGUAGE_NAMES.any { language ->
+        language.startsWith(languagePrefix) ||
+            languagePrefix == language ||
+            languagePrefix.removePrefix(language).trimStart().startsWith("<")
+    }
 }

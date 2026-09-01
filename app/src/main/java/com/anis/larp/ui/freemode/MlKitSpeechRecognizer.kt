@@ -184,7 +184,7 @@ class MlKitSpeechRecognizer(
         }
         val locale = speechRecognitionLocaleFor(languageTag)
         if (preferences.sttModelId == ModelPreferences.STT_QWEN_3_ASR) {
-            return qwenSpeechRecognizer.recognize(locale)
+            return qwenSpeechRecognizer.recognize(locale).text
         }
         val selected = mlKitRecognizerProvider.select(
             locale,
@@ -436,23 +436,41 @@ class MlKitSpeechRecognizer(
                 statusMessage = "Qwen ASR se prépare…"
             )
         }
-        val transcription = qwenSpeechRecognizer.recognize(locale) {
-            mutableState.update {
-                it.copy(
-                    phase = SpeechPhase.LISTENING,
-                    recognitionMode = "Qwen",
-                    statusMessage = "Écoute et transcription Qwen sur l'appareil"
+        val recognition = qwenSpeechRecognizer.recognize(
+            locale = null,
+            onListening = {
+                mutableState.update {
+                    it.copy(
+                        phase = SpeechPhase.LISTENING,
+                        recognitionMode = "Qwen",
+                        statusMessage = "Écoute Qwen sur l'appareil"
+                    )
+                }
+                sessionStore.recordRecognitionReady(
+                    localeTag = "auto",
+                    mode = "Qwen"
                 )
+            },
+            onTranscribing = {
+                mutableState.update {
+                    it.copy(statusMessage = "Qwen transcrit votre phrase…")
+                }
+            },
+            onPartialTranscript = { transcript ->
+                mutableState.update {
+                    it.copy(
+                        partialTranscript = transcript,
+                        statusMessage = "Transcription Qwen en cours…"
+                    )
+                }
             }
-            sessionStore.recordRecognitionReady(
-                localeTag = locale.toLanguageTag(),
-                mode = "Qwen"
-            )
-        }
+        )
         mutableState.update {
             it.copy(
-                committedTranscript = appendText(it.committedTranscript, transcription),
+                committedTranscript = appendText(it.committedTranscript, recognition.text),
                 partialTranscript = "",
+                locale = recognition.detectedLocale
+                    ?: localeMatchingSpokenText(recognition.text, locale),
                 statusMessage = "Transcription terminée…"
             )
         }
