@@ -66,6 +66,7 @@ import com.anis.larp.model.QwenAsrModel
 import com.anis.larp.model.commonNativeLanguages
 import com.anis.larp.model.displayNameIn
 import com.anis.larp.model.parseHuggingFaceModelReference
+import com.anis.larp.model.promptModelSupportsTargetLanguage
 import com.anis.larp.ui.components.ExpressivePill
 import com.anis.larp.ui.preview.LarpPhonePreviews
 import com.anis.larp.ui.preview.LarpPreviewTheme
@@ -111,9 +112,14 @@ private enum class OnboardingStep {
     PROMPT_MODEL
 }
 
-private enum class AsrChoice {
-    GEMINI,
+internal enum class AsrChoice {
+    ANDROID,
     QWEN
+}
+
+internal fun AsrChoice.onboardingModelId(): String = when (this) {
+    AsrChoice.ANDROID -> ModelPreferences.STT_ML_KIT_BASIC
+    AsrChoice.QWEN -> ModelPreferences.STT_QWEN_3_ASR
 }
 
 private enum class PromptChoice {
@@ -275,7 +281,18 @@ fun OnboardingScreen(
 
                 OnboardingStep.TARGET_LANGUAGE -> TargetLanguageStep(
                     selected = targetLanguage,
-                    onSelected = { targetLanguage = it },
+                    onSelected = { language ->
+                        targetLanguage = language
+                        if (
+                            promptChoice == PromptChoice.GEMINI_NANO &&
+                            !promptModelSupportsTargetLanguage(
+                                ModelPreferences.PROMPT_GEMINI_NANO,
+                                language
+                            )
+                        ) {
+                            promptChoice = null
+                        }
+                    },
                     onContinue = { step = OnboardingStep.SPEECH_RECOGNITION }
                 )
 
@@ -294,6 +311,7 @@ fun OnboardingScreen(
                 )
 
                 OnboardingStep.PROMPT_MODEL -> PromptModelStep(
+                    targetLanguage = targetLanguage,
                     selected = promptChoice,
                     onSelected = { promptChoice = it },
                     advancedExpanded = advancedExpanded,
@@ -317,7 +335,12 @@ fun OnboardingScreen(
                     onContinue = {
                         val target = targetLanguage ?: return@PromptModelStep
                         val promptSetup = when (promptChoice) {
-                            PromptChoice.GEMINI_NANO -> PromptSetup.GeminiNano
+                            PromptChoice.GEMINI_NANO -> PromptSetup.GeminiNano.takeIf {
+                                promptModelSupportsTargetLanguage(
+                                    ModelPreferences.PROMPT_GEMINI_NANO,
+                                    target
+                                )
+                            }
                             PromptChoice.GEMMA_4 -> when {
                                 !advancedExpanded -> PromptSetup.HuggingFace(
                                     repository =
@@ -352,11 +375,8 @@ fun OnboardingScreen(
                             OnboardingSelection(
                                 nativeLanguageTag = nativeLanguageTag,
                                 targetLanguage = target,
-                                sttModelId = when (asrChoice) {
-                                    AsrChoice.QWEN -> ModelPreferences.STT_QWEN_3_ASR
-                                    AsrChoice.GEMINI -> ModelPreferences.STT_ML_KIT_ADVANCED
-                                    null -> return@PromptModelStep
-                                },
+                                sttModelId = asrChoice?.onboardingModelId()
+                                    ?: return@PromptModelStep,
                                 promptSetup = promptSetup
                             )
                         )
@@ -386,10 +406,10 @@ private fun SpeechRecognitionStep(
     )
     Spacer(Modifier.height(22.dp))
     SelectionCard(
-        selected = selected == AsrChoice.GEMINI,
-        onClick = { onSelected(AsrChoice.GEMINI) },
-        title = "Gemini",
-        description = "Reconnaissance avancée Android AI Core · sur l'appareil"
+        selected = selected == AsrChoice.ANDROID,
+        onClick = { onSelected(AsrChoice.ANDROID) },
+        title = "Android · recommandé",
+        description = "Reconnaissance basique ML Kit · compatible Android 12+ · hors ligne"
     )
     SelectionCard(
         selected = selected == AsrChoice.QWEN,
@@ -684,6 +704,7 @@ private fun TargetLanguageStep(
 
 @Composable
 private fun PromptModelStep(
+    targetLanguage: LearningLanguage?,
     selected: PromptChoice?,
     onSelected: (PromptChoice) -> Unit,
     advancedExpanded: Boolean,
@@ -702,6 +723,12 @@ private fun PromptModelStep(
     isArtifactSupported: (String?) -> Boolean,
     onContinue: () -> Unit
 ) {
+    val geminiNanoSupportsTarget = targetLanguage?.let { language ->
+        promptModelSupportsTargetLanguage(
+            ModelPreferences.PROMPT_GEMINI_NANO,
+            language
+        )
+    } ?: true
     StepTitle(
         icon = Icons.Rounded.Memory,
         title = "Quel professeur doit répondre ?",
@@ -712,7 +739,12 @@ private fun PromptModelStep(
         selected = selected == PromptChoice.GEMINI_NANO,
         onClick = { onSelected(PromptChoice.GEMINI_NANO) },
         title = "Gemini Nano",
-        description = "Modèle Android AI Core, lorsqu'il est disponible sur ce téléphone"
+        description = if (geminiNanoSupportsTarget) {
+            "Modèle Android AI Core, lorsqu'il est disponible sur ce téléphone"
+        } else {
+            "Non proposé pour le chinois : utilisez Gemma 4, multilingue"
+        },
+        enabled = geminiNanoSupportsTarget
     )
     SelectionCard(
         selected = selected == PromptChoice.GEMMA_4,
@@ -765,7 +797,7 @@ private fun PromptModelStep(
     val importedModelValid = importedModel != null &&
         isArtifactSupported(importedModel.artifactFileName)
     val canContinue = when (selected) {
-        PromptChoice.GEMINI_NANO -> true
+        PromptChoice.GEMINI_NANO -> geminiNanoSupportsTarget
         PromptChoice.GEMMA_4 -> when {
             !advancedExpanded -> true
             advancedSource == AdvancedSource.HUGGING_FACE -> customRepositoryValid
@@ -993,13 +1025,14 @@ private fun SelectionCard(
     selected: Boolean,
     onClick: () -> Unit,
     title: String,
-    description: String
+    description: String,
+    enabled: Boolean = true
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         shape = MaterialTheme.shapes.extraLarge,
         color = if (selected) {
             MaterialTheme.colorScheme.primaryContainer
@@ -1012,13 +1045,21 @@ private fun SelectionCard(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            RadioButton(selected = selected, onClick = onClick)
+            RadioButton(selected = selected, onClick = onClick, enabled = enabled)
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .padding(start = 6.dp)
             ) {
-                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (enabled) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
                 Text(
                     text = description,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1145,6 +1186,7 @@ private fun PromptModelOnboardingPreview() {
     LarpPreviewTheme {
         OnboardingStepPreviewFrame(step = OnboardingStep.PROMPT_MODEL) {
             PromptModelStep(
+                targetLanguage = LearningLanguage.SIMPLIFIED_CHINESE,
                 selected = PromptChoice.GEMMA_4,
                 onSelected = {},
                 advancedExpanded = false,

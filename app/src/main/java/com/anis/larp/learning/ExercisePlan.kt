@@ -32,9 +32,9 @@ fun fallbackExercisePlan(
     choices: List<String> = emptyList()
 ): ExercisePlan {
     val candidates = (listOf(expectedAnswer) + choices + prompt)
-        .flatMap { it.split(Regex("[^\\p{L}\\p{N}'’-]+")) }
+        .flatMap(::learningTextTokens)
         .map(String::trim)
-        .filter { it.length >= 2 }
+        .filter { it.length >= 2 || containsHanCharacters(it) }
         .distinctBy(String::lowercase)
     val first = candidates.getOrNull(0) ?: "mot"
     val second = candidates.firstOrNull { !it.equals(first, ignoreCase = true) } ?: "phrase"

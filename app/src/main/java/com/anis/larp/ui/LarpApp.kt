@@ -44,7 +44,8 @@ import com.anis.larp.ui.settings.ModelSettingsScreen
 @Composable
 fun LarpApp(
     animationsEnabled: Boolean = true,
-    skipOnboarding: Boolean = false
+    skipOnboarding: Boolean = false,
+    skipModelReadiness: Boolean = false
 ) {
     val context = LocalContext.current
     val preferences = remember(context.applicationContext) {
@@ -276,7 +277,7 @@ fun LarpApp(
     val navigationBarPadding =
         WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
-    if (!uiState.modelsReady) {
+    if (!skipModelReadiness && !uiState.modelsReady) {
         ModelReadinessScreen(
             downloads = modelDownloads,
             statusMessage = uiState.statusMessage
@@ -358,15 +359,15 @@ fun LarpApp(
                 onRateDifficulty = { exercise, rating ->
                     learningContentRepository.rateExercise(exercise.id, rating)
                 },
-                onSpeakWord = { text, _ ->
+                onSpeakWord = { text, languageTag ->
                     conversationController.speakPracticeWord(
                         text,
-                        preferences.targetLanguage.languageTag
+                        languageTag
                     )
                 },
-                onRecognizeAnswer = {
+                onRecognizeAnswer = { languageTag ->
                     conversationController.recognizePracticeAnswer(
-                        preferences.targetLanguage.languageTag
+                        languageTag
                     )
                 },
                 onImportText = { sourceText ->

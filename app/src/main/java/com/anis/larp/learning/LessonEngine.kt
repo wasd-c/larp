@@ -126,6 +126,14 @@ class LessonContentValidator(
             content.targets.forEachIndexed { index, target ->
                 if (target.text.isBlank()) add("target $index has empty text")
                 if (target.meaning.isBlank()) add("target $index has empty meaning")
+                if (
+                    isChineseLanguageTag(language) &&
+                    target.reading.orEmpty().codePoints().noneMatch { codePoint ->
+                        Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.LATIN
+                    }
+                ) {
+                    add("target $index needs a Latin pinyin reading")
+                }
             }
             if (content.sentences.isEmpty()) add("at least one sentence is required")
             content.sentences.forEachIndexed { sentenceIndex, sentence ->
@@ -138,7 +146,10 @@ class LessonContentValidator(
                         add("sentence $sentenceIndex does not contain target $targetIndex")
                     }
                 }
-                if (sentence.text.split(Regex("\\s+")).size > 16) {
+                if (
+                    learningUnitCount(sentence.text, language) >
+                    maximumSentenceUnits(sentence.text, language)
+                ) {
                     add("sentence $sentenceIndex is too long")
                 }
             }
@@ -160,7 +171,16 @@ class LessonContentValidator(
 
     fun repair(content: LessonContent, language: String): LessonContent {
         val targets = content.targets
-            .map { it.copy(text = it.text.trim(), meaning = it.meaning.trim(), reading = it.reading?.trim()?.ifBlank { null }) }
+            .map {
+                it.copy(
+                    text = it.text.trim(),
+                    meaning = it.meaning.trim(),
+                    reading = it.reading
+                        ?.trim()
+                        ?.takeIf(String::isNotBlank)
+                        ?.takeUnless { value -> value.equals("NONE", ignoreCase = true) }
+                )
+            }
             .filter { it.text.isNotBlank() && it.meaning.isNotBlank() }
             .distinctBy { normalizer.normalize(it.text, language) }
             .take(4)
@@ -173,11 +193,25 @@ class LessonContentValidator(
             }).distinct().filter { index ->
                 index in targets.indices && containsTarget(text, targets[index].text, language)
             }
-            sentence.copy(
+            val requestedChunks = sentence.chunks
+                .map(String::trim)
+                .filter {
+                    it.isNotBlank() && !it.equals("NONE", ignoreCase = true)
+                }
+            val repairedSentence = sentence.copy(
                 text = text,
                 meaning = meaning,
                 targetIndexes = indexes,
-                chunks = sentence.chunks.map(String::trim).filter(String::isNotBlank)
+                chunks = requestedChunks.takeIf { chunksRepresent(it, text) }.orEmpty()
+            )
+            repairedSentence.copy(
+                chunks = if (
+                    isChineseLanguageTag(language) || containsHanCharacters(text)
+                ) {
+                    learningChunks(repairedSentence, targets)
+                } else {
+                    repairedSentence.chunks
+                }
             )
         }.distinctBy { normalizer.normalize(it.text, language) }
         return content.copy(topic = content.topic.trim(), targets = targets, sentences = sentences)
@@ -216,7 +250,11 @@ class LocalDistractorProvider(
         primary = content.targets.map { it.text },
         secondary = recentlyLearned.map { it.text },
         tertiary = knownTargets.map { it.text },
-        fallback = GENERIC_TARGETS,
+        fallback = if (containsHanCharacters(content.targets[correctTargetIndex].text)) {
+            GENERIC_CHINESE_TARGETS
+        } else {
+            GENERIC_TARGETS
+        },
         count = count
     )
 
@@ -243,6 +281,7 @@ class LocalDistractorProvider(
     private companion object {
         val GENERIC_MEANINGS = listOf("autre chose", "maintenant", "plus tard", "personne")
         val GENERIC_TARGETS = listOf("other", "another", "example", "option")
+        val GENERIC_CHINESE_TARGETS = listOf("今天", "朋友", "喜欢", "学习")
     }
 }
 
@@ -251,15 +290,8 @@ interface AnswerNormalizer {
 }
 
 class DefaultAnswerNormalizer : AnswerNormalizer {
-    override fun normalize(text: String, language: String): String {
-        val locale = Locale.forLanguageTag(language).takeIf { it.language.isNotBlank() } ?: Locale.ROOT
-        return Normalizer.normalize(text, Normalizer.Form.NFKC)
-            .replace('’', '\'')
-            .trim()
-            .replace(Regex("[.!?。！？]+$"), "")
-            .replace(Regex("\\s+"), " ")
-            .lowercase(locale)
-    }
+    override fun normalize(text: String, language: String): String =
+        normalizedLearningAnswer(text, language)
 }
 
 class LessonStepAnswerValidator(
@@ -321,7 +353,10 @@ class DeterministicLessonCompiler(
             val missing = sentence.targetIndexes.firstOrNull() ?: 0
             steps += LessonStep.ClozeSentence(sentenceIndex, missing, targetChoices(missing, content, random))
             steps += LessonStep.SentenceMeaningChoice(sentenceIndex, sentenceMeaningChoices(sentenceIndex, content, random), config.enableListening)
-            steps += LessonStep.ReorderChunks(sentenceIndex, shuffledChunks(sentence, random))
+            steps += LessonStep.ReorderChunks(
+                sentenceIndex,
+                shuffledChunks(sentence, content.targets, random)
+            )
         }
         val recapIndex = content.sentences.lastIndex
         steps += if (config.enableSpeaking) LessonStep.SpeakSentence(recapIndex, showText = false)
@@ -339,16 +374,31 @@ class DeterministicLessonCompiler(
             add(LessonStep.SentenceMeaningChoice(sentenceIndex, sentenceMeaningChoices(sentenceIndex, content, random), config.enableListening))
             if (config.enableListening) add(LessonStep.AudioRecognition(importantTarget, targetChoices(importantTarget, content, random)))
             else add(LessonStep.MeaningChoice(importantTarget, meaningChoices(importantTarget, content, random)))
-            add(LessonStep.ReorderChunks(sentenceIndex, shuffledChunks(sentence, random)))
+            add(
+                LessonStep.ReorderChunks(
+                    sentenceIndex,
+                    shuffledChunks(sentence, content.targets, random)
+                )
+            )
             add(LessonStep.ClozeSentence(sentenceIndex, importantTarget, targetChoices(importantTarget, content, random)))
-            add(LessonStep.MeaningToSentence(sentenceIndex, shuffledChunks(sentence, random)))
+            add(
+                LessonStep.MeaningToSentence(
+                    sentenceIndex,
+                    shuffledChunks(sentence, content.targets, random)
+                )
+            )
             add(LessonStep.TypeAnswer(sentenceIndex, showMeaning = true))
             if (config.enableSpeaking) {
                 add(LessonStep.SpeakSentence(sentenceIndex, showText = true))
                 add(LessonStep.SpeakSentence(sentenceIndex, showText = false))
             } else {
                 add(LessonStep.TypeAnswer(sentenceIndex, showMeaning = false))
-                add(LessonStep.MeaningToSentence(sentenceIndex, shuffledChunks(sentence, random)))
+                add(
+                    LessonStep.MeaningToSentence(
+                        sentenceIndex,
+                        shuffledChunks(sentence, content.targets, random)
+                    )
+                )
             }
             add(LessonStep.TypeAnswer(sentenceIndex, showMeaning = true))
         }
@@ -395,16 +445,18 @@ class DeterministicLessonCompiler(
         return (alternatives.distinct().take(3) + correct).distinct().shuffled(random)
     }
 
-    private fun shuffledChunks(sentence: LearningSentence, random: Random): List<String> {
-        val chunks = sentence.chunks.ifEmpty { automaticChunks(sentence.text) }
+    private fun shuffledChunks(
+        sentence: LearningSentence,
+        targets: List<LearningTarget>,
+        random: Random
+    ): List<String> {
+        val chunks = learningChunks(sentence, targets)
         if (chunks.size < 2) return chunks
         var shuffled = chunks.shuffled(random)
         if (shuffled == chunks) shuffled = shuffled.drop(1) + shuffled.first()
         return shuffled
     }
 
-    private fun automaticChunks(text: String): List<String> = text
-        .trim().split(Regex("\\s+")).filter(String::isNotBlank)
 }
 
 object LessonContentCodec {

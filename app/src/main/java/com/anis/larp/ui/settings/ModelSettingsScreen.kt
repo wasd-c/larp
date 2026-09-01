@@ -1,6 +1,8 @@
 package com.anis.larp.ui.settings
 
+import android.content.Intent
 import android.net.Uri
+import android.speech.tts.TextToSpeech
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -155,6 +157,11 @@ fun ModelSettingsScreen(
             }
         }
     }
+    val ttsDataInstaller = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        refreshKey++
+    }
 
     LaunchedEffect(
         refreshKey,
@@ -245,6 +252,16 @@ fun ModelSettingsScreen(
                         onSelected = {
                             preferences.ttsVoiceName = it
                             refreshKey++
+                        },
+                        emptyActionLabel = "Installer une voix hors ligne",
+                        onEmptyAction = {
+                            val intent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
+                            if (intent.resolveActivity(context.packageManager) != null) {
+                                ttsDataInstaller.launch(intent)
+                            } else {
+                                loadingError =
+                                    "Le moteur vocal installé ne propose pas d'écran d'installation."
+                            }
                         }
                     )
                     ImportPromptModelCard(
@@ -585,7 +602,9 @@ private fun ModelSection(
     options: List<InstalledModelOption>,
     selectedId: String?,
     emptyMessage: String,
-    onSelected: (String) -> Unit
+    onSelected: (String) -> Unit,
+    emptyActionLabel: String? = null,
+    onEmptyAction: (() -> Unit)? = null
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -618,11 +637,23 @@ private fun ModelSection(
                 }
             }
             if (options.isEmpty()) {
-                Text(
-                    text = emptyMessage,
+                Column(
                     modifier = Modifier.padding(18.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = emptyMessage,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (emptyActionLabel != null && onEmptyAction != null) {
+                        FilledTonalButton(
+                            onClick = onEmptyAction,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(emptyActionLabel)
+                        }
+                    }
+                }
             } else {
                 options.forEachIndexed { index, option ->
                     if (index > 0) {

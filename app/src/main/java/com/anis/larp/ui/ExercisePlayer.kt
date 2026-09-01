@@ -128,12 +128,14 @@ import com.anis.larp.learning.ExerciseCompletion
 import com.anis.larp.learning.LearnedWord
 import com.anis.larp.learning.LearningTarget
 import com.anis.larp.learning.LessonStep
+import com.anis.larp.learning.learningChunks
+import com.anis.larp.learning.normalizedLearningAnswer
+import com.anis.larp.learning.progressiveLearningTextFrames
 import com.anis.larp.ui.preview.LarpPhonePreviews
 import com.anis.larp.ui.preview.LarpPreviewData
 import com.anis.larp.ui.preview.LarpPreviewTheme
 import com.anis.larp.ui.preview.LarpTabletPreview
 import com.anis.larp.ui.theme.LarpMotion
-import java.text.Normalizer
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -297,7 +299,9 @@ private fun CompiledLessonPlayer(
                     LearnedWord(
                         target.text, target.reading ?: target.text, target.meaning,
                         sentence.text.replaceFirst(target.text, "___", ignoreCase = true),
-                        lessonStep.choices.filterNot { answersEquivalent(it, target.text) }, "", ""
+                        lessonStep.choices.filterNot {
+                            answersEquivalent(it, target.text, exercise.languageTag)
+                        }, "", ""
                     ),
                     onBack, previous, canReturnForward, historyNext, ::finishOrAdvance,
                     { mistakes++ }, totalSteps = steps.size
@@ -307,7 +311,8 @@ private fun CompiledLessonPlayer(
                 val sentence = content.sentences[lessonStep.sentenceIndex]
                 ReorderStep(
                     exercise, number, steps.size, stringResource(R.string.lesson_reorder_chunks),
-                    lessonStep.shuffledChunks, sentence.chunks.ifEmpty { sentence.text.split(Regex("\\s+")) },
+                    lessonStep.shuffledChunks,
+                    learningChunks(sentence, content.targets),
                     onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, { mistakes++ }
                 )
             }
@@ -315,7 +320,8 @@ private fun CompiledLessonPlayer(
                 val sentence = content.sentences[lessonStep.sentenceIndex]
                 ReorderStep(
                     exercise, number, steps.size, sentence.meaning,
-                    lessonStep.shuffledChunks, sentence.chunks.ifEmpty { sentence.text.split(Regex("\\s+")) },
+                    lessonStep.shuffledChunks,
+                    learningChunks(sentence, content.targets),
                     onBack, previous, canReturnForward, historyNext, ::finishOrAdvance, { mistakes++ }
                 )
             }
@@ -378,7 +384,11 @@ private fun LocalChoiceStep(
         stringResource(R.string.exercise_verify), selected != null,
         onMiddleClick = {
             attempted = true
-            correct = answersEquivalent(selected.orEmpty(), correctAnswer)
+            correct = answersEquivalent(
+                selected.orEmpty(),
+                correctAnswer,
+                exercise.languageTag
+            )
             if (correct) scope.launch { delay(450); onCorrect() } else onMistake()
         },
         nextEnabled = canReturnForward,
@@ -539,7 +549,8 @@ private fun ReorderStep(
         stringResource(R.string.exercise_verify), remaining.isEmpty(),
         onMiddleClick = {
             attempted = true
-            correct = answer.map(::normalizeAnswer) == expected.map(::normalizeAnswer)
+            correct = answer.map { normalizeAnswer(it, exercise.languageTag) } ==
+                expected.map { normalizeAnswer(it, exercise.languageTag) }
             if (correct) scope.launch { delay(450); onCorrect() } else onMistake()
         },
         nextEnabled = canReturnForward, onNext = onHistoryNext
@@ -928,7 +939,8 @@ private fun LearnWordStep(
                         textAlign = TextAlign.Center
                     )
                     if (word.pronunciation.isNotBlank() &&
-                        normalizeAnswer(word.pronunciation) != normalizeAnswer(word.text)
+                        normalizeAnswer(word.pronunciation, exercise.languageTag) !=
+                        normalizeAnswer(word.text, exercise.languageTag)
                     ) {
                         Text(
                             text = word.pronunciation,
@@ -1022,8 +1034,10 @@ private fun AnswerStep(
         val wasCorrect = correct
         answer = value
         answeredByVoice = voiced
-        correct = answersEquivalent(value, expectedAnswer) ||
-            (!singleLine && normalizeAnswer(value).contains(normalizeAnswer(expectedAnswer)))
+        correct = answersEquivalent(value, expectedAnswer, exercise.languageTag) ||
+            (!singleLine && normalizeAnswer(value, exercise.languageTag).contains(
+                normalizeAnswer(expectedAnswer, exercise.languageTag)
+            ))
         if (correct) {
             error = null
             wrongTranscript = ""
@@ -1071,8 +1085,8 @@ private fun AnswerStep(
     }
     LaunchedEffect(wrongTranscript) {
         visibleTranscript = ""
-        wrongTranscript.split(Regex("\\s+")).filter(String::isNotBlank).forEach { word ->
-            visibleTranscript = (visibleTranscript + " " + word).trim()
+        progressiveLearningTextFrames(wrongTranscript).forEach { frame ->
+            visibleTranscript = frame
             delay(90)
         }
     }
@@ -1216,7 +1230,11 @@ private fun GapDragStep(
         middleEnabled = selected != null,
         onMiddleClick = {
             attempted = true
-            correct = answersEquivalent(selected.orEmpty(), word.text)
+            correct = answersEquivalent(
+                selected.orEmpty(),
+                word.text,
+                exercise.languageTag
+            )
             if (!correct) {
                 onMistake()
             } else {
@@ -1368,9 +1386,17 @@ private fun FinalMixedStep(
         onMiddleClick = {
             attempted = true
             correct = learnedIndexes.all { index ->
-                answersEquivalent(typed[index].orEmpty(), plan.finalAnswers[index])
+                answersEquivalent(
+                    typed[index].orEmpty(),
+                    plan.finalAnswers[index],
+                    exercise.languageTag
+                )
             } && fillerIndexes.all { index ->
-                answersEquivalent(dropped[index].orEmpty(), plan.finalAnswers[index])
+                answersEquivalent(
+                    dropped[index].orEmpty(),
+                    plan.finalAnswers[index],
+                    exercise.languageTag
+                )
             }
             if (!correct) onMistake()
             else scope.launch {
@@ -1810,15 +1836,13 @@ private fun correctContainerColor(): Color =
         Color(0xFFC8E6C9)
     }
 
-private fun answersEquivalent(actual: String, expected: String): Boolean =
-    expected.split("||").any { accepted -> normalizeAnswer(actual) == normalizeAnswer(accepted) }
+private fun answersEquivalent(actual: String, expected: String, languageTag: String): Boolean =
+    expected.split("||").any { accepted ->
+        normalizeAnswer(actual, languageTag) == normalizeAnswer(accepted, languageTag)
+    }
 
-private fun normalizeAnswer(value: String): String = Normalizer
-    .normalize(value, Normalizer.Form.NFC)
-    .lowercase(Locale.ROOT)
-    .replace(Regex("\\s+"), " ")
-    .trim()
-    .trimEnd('.', '!', '?', '。', '！', '？')
+private fun normalizeAnswer(value: String, languageTag: String): String =
+    normalizedLearningAnswer(value, languageTag)
 
 @Composable
 private fun formatDuration(millis: Long): String {

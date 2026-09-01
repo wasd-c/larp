@@ -49,16 +49,15 @@ class FreeModeScreenTest {
     val composeRule = createComposeRule()
 
     private fun showFreeMode() {
-        composeRule.mainClock.autoAdvance = false
         composeRule.setContent {
             LarpTheme(dynamicColor = false) {
                 LarpApp(
                     animationsEnabled = false,
-                    skipOnboarding = true
+                    skipOnboarding = true,
+                    skipModelReadiness = true
                 )
             }
         }
-        composeRule.mainClock.advanceTimeByFrame()
     }
 
     private fun tenStepPlan(): ExercisePlan = ExercisePlan(

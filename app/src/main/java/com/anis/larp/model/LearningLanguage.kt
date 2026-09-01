@@ -36,8 +36,9 @@ enum class LearningLanguage(
     companion object {
         fun fromLanguageTag(tag: String?): LearningLanguage =
             entries.firstOrNull {
-                Locale.forLanguageTag(it.languageTag).language ==
-                Locale.forLanguageTag(tag.orEmpty()).language
+                val requestedLanguage = Locale.forLanguageTag(tag.orEmpty()).language
+                    .let { language -> if (language == "cmn") "zh" else language }
+                Locale.forLanguageTag(it.languageTag).language == requestedLanguage
             } ?: ENGLISH
 
         /**
@@ -141,6 +142,16 @@ fun speechRecognitionLocaleFor(languageTag: String): Locale {
     val locale = Locale.forLanguageTag(languageTag)
     return if (locale.language == "zh" || locale.language == "cmn") {
         Locale.forLanguageTag("cmn-Hans-CN")
+    } else {
+        locale
+    }
+}
+
+/** Android TTS uses the zh family, while ML Kit speech recognition uses cmn. */
+fun textToSpeechLocaleFor(languageTag: String): Locale {
+    val locale = Locale.forLanguageTag(languageTag)
+    return if (locale.language == "zh" || locale.language == "cmn") {
+        Locale.forLanguageTag("zh-Hans-CN")
     } else {
         locale
     }

@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import com.anis.larp.model.offlineVoiceLocaleScore
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
@@ -95,14 +96,21 @@ class OfflineTextToSpeech(context: Context) {
         val offlineVoices = textToSpeech.voices
             .orEmpty()
             .filter { voice ->
-                voice.locale.language == requestedLocale.language &&
-                    !voice.isNetworkConnectionRequired
+                !voice.isNetworkConnectionRequired &&
+                    TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in
+                    voice.features.orEmpty() &&
+                    offlineVoiceLocaleScore(requestedLocale, voice.locale) >= 0
             }
         val selectedMatchingVoice = selectedVoiceName?.let { name ->
             offlineVoices.firstOrNull { it.name == name }
         }
         val bestOfflineVoice = selectedMatchingVoice ?: offlineVoices
-            .maxByOrNull { voice -> voice.quality }
+            .maxWithOrNull(
+                compareBy<Voice> { voice ->
+                    offlineVoiceLocaleScore(requestedLocale, voice.locale)
+                }
+                    .thenBy { voice -> voice.quality }
+            )
             ?: throw IllegalStateException(
                 "Aucune voix hors ligne n'est installée pour ${requestedLocale.displayLanguage}."
             )

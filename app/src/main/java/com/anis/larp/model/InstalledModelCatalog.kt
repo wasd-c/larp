@@ -41,11 +41,16 @@ class InstalledModelCatalog(
             runCatching { loadTts(targetLanguage.locale) }.getOrDefault(emptyList())
         }
         val prompt = async {
-            runCatching { loadPromptModels() }.getOrDefault(emptyList())
+            runCatching { loadPromptModels(targetLanguage) }.getOrDefault(emptyList())
         }
         val stt = async {
             runCatching {
-                loadStt(speechRecognitionLocaleFor(nativeLanguageTag))
+                loadStt(
+                    listOf(
+                        speechRecognitionLocaleFor(nativeLanguageTag),
+                        targetLanguage.speechRecognitionLocale
+                    ).distinctBy(Locale::toLanguageTag)
+                )
             }.getOrDefault(emptyList())
         }
         ModelInventory(
@@ -56,6 +61,7 @@ class InstalledModelCatalog(
     }
 
     private suspend fun loadTts(targetLocale: Locale): List<InstalledModelOption> {
+        val requestedLocale = textToSpeechLocaleFor(targetLocale.toLanguageTag())
         val initialized = CompletableDeferred<Int>()
         val textToSpeech = withContext(Dispatchers.Main) {
             TextToSpeech(applicationContext) { status ->
@@ -69,11 +75,16 @@ class InstalledModelCatalog(
                 textToSpeech.voices
                     .orEmpty()
                     .filter { voice ->
-                        voice.locale.language == targetLocale.language &&
-                            !voice.isNetworkConnectionRequired
+                        !voice.isNetworkConnectionRequired &&
+                            TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in
+                            voice.features.orEmpty() &&
+                            offlineVoiceLocaleScore(requestedLocale, voice.locale) >= 0
                     }
                     .sortedWith(
-                        compareByDescending<android.speech.tts.Voice> { it.quality }
+                        compareByDescending<android.speech.tts.Voice> {
+                            offlineVoiceLocaleScore(requestedLocale, it.locale)
+                        }
+                            .thenByDescending { it.quality }
                             .thenBy { it.name }
                     )
                     .map { voice ->
@@ -92,7 +103,9 @@ class InstalledModelCatalog(
         }
     }
 
-    private suspend fun loadPromptModels(): List<InstalledModelOption> {
+    private suspend fun loadPromptModels(
+        targetLanguage: LearningLanguage
+    ): List<InstalledModelOption> {
         val localModels = withContext(Dispatchers.IO) {
             promptCatalog.availableModels().map { record ->
                 InstalledModelOption(
@@ -118,7 +131,13 @@ class InstalledModelCatalog(
                 )
             }
         }
-        val nanoOption = runCatching {
+        val nanoOption = if (!promptModelSupportsTargetLanguage(
+                ModelPreferences.PROMPT_GEMINI_NANO,
+                targetLanguage
+            )
+        ) {
+            emptyList()
+        } else runCatching {
             val geminiNano = Generation.getClient()
             try {
                 if (
@@ -143,7 +162,7 @@ class InstalledModelCatalog(
     }
 
     private suspend fun loadStt(
-        targetLocale: Locale
+        requiredLocales: List<Locale>
     ): List<InstalledModelOption> {
         val candidates = listOf(
             Triple(
@@ -164,34 +183,37 @@ class InstalledModelCatalog(
                         id = ModelPreferences.STT_QWEN_3_ASR,
                         label = "Qwen",
                         description =
-                            "Qwen3-ASR 0.6B · ${targetLocale.toLanguageTag()} · hors ligne"
+                            "Qwen3-ASR 0.6B · multilingue · hors ligne"
                     )
                 )
             }
             candidates.forEach { (id, mode, label) ->
                 runCatching {
-                    val recognizer = SpeechRecognition.getClient(
-                        speechRecognizerOptions {
-                            locale = targetLocale
-                            preferredMode = mode
-                        }
-                    )
-                    try {
-                        if (
+                    val availableForEveryLocale = requiredLocales.all { locale ->
+                        val recognizer = SpeechRecognition.getClient(
+                            speechRecognizerOptions {
+                                this.locale = locale
+                                preferredMode = mode
+                            }
+                        )
+                        try {
                             withTimeout(10_000) { recognizer.checkStatus() } ==
-                            FeatureStatus.AVAILABLE
-                        ) {
-                            add(
-                                InstalledModelOption(
-                                    id = id,
-                                    label = label,
-                                    description =
-                                        "${targetLocale.toLanguageTag()} · sur l'appareil"
-                                )
-                            )
+                                FeatureStatus.AVAILABLE
+                        } finally {
+                            recognizer.close()
                         }
-                    } finally {
-                        recognizer.close()
+                    }
+                    if (availableForEveryLocale) {
+                        add(
+                            InstalledModelOption(
+                                id = id,
+                                label = label,
+                                description =
+                                    requiredLocales.joinToString(" + ") {
+                                        it.toLanguageTag()
+                                    } + " · sur l'appareil"
+                            )
+                        )
                     }
                 }
             }

@@ -6,6 +6,7 @@ import com.anis.larp.learning.Lesson
 import com.anis.larp.learning.APPROVED_TOPIC_TAGS_PROMPT
 import com.anis.larp.learning.YoutubeTranscriptSource
 import com.anis.larp.learning.compactTranscript
+import com.anis.larp.learning.isChineseLanguageTag
 import java.text.Normalizer
 import java.util.Locale
 import kotlin.math.ceil
@@ -214,29 +215,46 @@ internal fun learningContentPrompt(
     } else {
         "Create the requested content now. Do not ask another question."
     }
+    val targetLanguageTag = tutorContext.targetLanguage.toLanguageTag()
+    val chineseInstructions = if (isChineseLanguageTag(targetLanguageTag)) {
+        """
+            For every Chinese target, ACTION_R1/R2/R3 must contain Hanyu Pinyin with tone marks.
+            ACTION_C1/C2 must split each sentence into 2 to 8 meaningful blocks separated by /.
+            Chunks must preserve every Han character exactly once and stay in sentence order.
+            Keep each Chinese sentence at or below 24 Han characters.
+        """.trimIndent()
+    } else {
+        "Use NONE for readings or chunks that are not needed."
+    }
     val actionFields = """
         ACTION: SUBMIT_LESSON_CONTENT
-        ACTION_TOPIC: <one everyday topic>
+        ACTION_TOPIC: <exactly one approved topic tag>
         ACTION_X1: <target 1 text>
         ACTION_M1: <target 1 meaning in ${tutorContext.nativeLanguage.toLanguageTag()}>
+        ACTION_R1: <reading aid or NONE>
         ACTION_X2: <target 2 text>
         ACTION_M2: <target 2 meaning>
+        ACTION_R2: <reading aid or NONE>
         ACTION_X3: <target 3 text>
         ACTION_M3: <target 3 meaning>
+        ACTION_R3: <reading aid or NONE>
         ACTION_S1: <short natural sentence 1>
         ACTION_SM1: <sentence 1 meaning>
         ACTION_I1: <target indexes in sentence 1, comma separated>
+        ACTION_C1: <ordered chunks separated by / or NONE>
         ACTION_S2: <short natural sentence 2>
         ACTION_SM2: <sentence 2 meaning>
         ACTION_I2: <target indexes in sentence 2, comma separated>
+        ACTION_C2: <ordered chunks separated by / or NONE>
     """.trimIndent()
     return """
         You create language-learning content that larp saves locally.
-        The learner speaks ${tutorContext.nativeLanguage.toLanguageTag()} and is learning ${tutorContext.targetLanguage.toLanguageTag()}.
+        The learner speaks ${tutorContext.nativeLanguage.toLanguageTag()} and is learning $targetLanguageTag.
         Use the current request to choose one useful beginner topic.
+        ACTION_TOPIC must be exactly one of: $APPROVED_TOPIC_TAGS_PROMPT.
         Teach exactly 3 useful words or expressions and write exactly 2 short natural sentences reusing them.
-        Keep sentences under 8 words when practical. Reading is only for scripts which need it.
-        Omit chunks unless automatic whitespace splitting would be poor.
+        Keep sentences under 8 words when practical.
+        $chineseInstructions
         The app creates all steps, choices, instructions, validation and scoring locally.
         $retryInstruction
         Return exactly the following fields as plain text, one field per line.

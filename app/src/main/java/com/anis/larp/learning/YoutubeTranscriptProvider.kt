@@ -178,19 +178,65 @@ private fun selectTranscript(
     transcripts: List<Transcript>,
     preferredLanguages: List<String>
 ): Transcript {
-    val preferred = preferredLanguages
-        .flatMap { languageTag ->
-            val locale = Locale.forLanguageTag(languageTag)
-            listOf(languageTag, locale.language)
-        }
-        .filter(String::isNotBlank)
-        .distinctBy { it.lowercase(Locale.ROOT) }
-    return preferred.firstNotNullOfOrNull { language ->
-        transcripts.firstOrNull {
-            it.languageCode.equals(language, ignoreCase = true)
-        }
+    return preferredLanguages.firstNotNullOfOrNull { preferred ->
+        transcripts
+            .map { transcript ->
+                transcript to transcriptLanguageMatchScore(
+                    preferred,
+                    transcript.languageCode
+                )
+            }
+            .filter { (_, score) -> score >= 0 }
+            .maxWithOrNull(
+                compareBy<Pair<Transcript, Int>> { (_, score) -> score }
+                    .thenBy { (transcript, _) -> if (transcript.isGenerated) 0 else 1 }
+            )
+            ?.first
     } ?: transcripts.firstOrNull { !it.isGenerated }
         ?: transcripts.first()
+}
+
+internal fun transcriptLanguageMatchScore(preferredTag: String, candidateTag: String): Int {
+    if (preferredTag.equals(candidateTag, ignoreCase = true)) return 100
+    val preferred = Locale.forLanguageTag(preferredTag)
+    val candidate = Locale.forLanguageTag(candidateTag)
+    if (
+        canonicalTranscriptLanguage(preferred) !=
+        canonicalTranscriptLanguage(candidate)
+    ) return -1
+
+    val preferredScript = transcriptScript(preferred)
+    val candidateScript = transcriptScript(candidate)
+    if (
+        preferredScript.isNotBlank() &&
+        candidateScript.isNotBlank() &&
+        preferredScript != candidateScript
+    ) return -1
+
+    var score = 10
+    if (preferredScript.isNotBlank() && preferredScript == candidateScript) score += 30
+    if (
+        preferred.country.isNotBlank() &&
+        preferred.country.equals(candidate.country, ignoreCase = true)
+    ) score += 20
+    return score
+}
+
+private fun canonicalTranscriptLanguage(locale: Locale): String = when (
+    locale.language.lowercase(Locale.ROOT)
+) {
+    "cmn" -> "zh"
+    else -> locale.language.lowercase(Locale.ROOT)
+}
+
+private fun transcriptScript(locale: Locale): String {
+    if (locale.script.isNotBlank()) return locale.script
+    if (canonicalTranscriptLanguage(locale) != "zh") return ""
+    return when (locale.country.uppercase(Locale.ROOT)) {
+        "CN", "SG", "MY" -> "Hans"
+        "TW", "HK", "MO" -> "Hant"
+        else -> ""
+    }
 }
 
 private class AndroidYoutubeClient : YoutubeClient {

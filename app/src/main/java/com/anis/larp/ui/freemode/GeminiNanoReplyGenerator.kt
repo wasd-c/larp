@@ -192,17 +192,17 @@ internal fun parseLearningContentAction(
                         com.anis.larp.learning.LearningTarget(
                             fields.requireActionField("ACTION_X1"),
                             fields.requireActionField("ACTION_M1"),
-                            fields["ACTION_R1"]?.ifBlank { null }
+                            fields.optionalActionField("ACTION_R1")
                         ),
                         com.anis.larp.learning.LearningTarget(
                             fields.requireActionField("ACTION_X2"),
                             fields.requireActionField("ACTION_M2"),
-                            fields["ACTION_R2"]?.ifBlank { null }
+                            fields.optionalActionField("ACTION_R2")
                         ),
                         com.anis.larp.learning.LearningTarget(
                             fields.requireActionField("ACTION_X3"),
                             fields.requireActionField("ACTION_M3"),
-                            fields["ACTION_R3"]?.ifBlank { null }
+                            fields.optionalActionField("ACTION_R3")
                         )
                     ),
                     sentences = listOf(
@@ -210,13 +210,13 @@ internal fun parseLearningContentAction(
                             fields.requireActionField("ACTION_S1"),
                             fields.requireActionField("ACTION_SM1"),
                             fields.requireActionField("ACTION_I1"),
-                            fields["ACTION_C1"].orEmpty()
+                            fields.optionalActionField("ACTION_C1").orEmpty()
                         ),
                         com.anis.larp.learning.explicitSentence(
                             fields.requireActionField("ACTION_S2"),
                             fields.requireActionField("ACTION_SM2"),
                             fields.requireActionField("ACTION_I2"),
-                            fields["ACTION_C2"].orEmpty()
+                            fields.optionalActionField("ACTION_C2").orEmpty()
                         )
                     )
                 )
@@ -314,6 +314,12 @@ private fun Map<String, String>.requireActionField(key: String): String =
         ?: throw IllegalArgumentException(
             "Le modèle a demandé une création incomplète ($key manquant)."
         )
+
+private fun Map<String, String>.optionalActionField(key: String): String? =
+    get(key)
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.takeUnless { it.equals("NONE", ignoreCase = true) }
 
 private fun String.unescapeActionValue(): String =
     replace("\\\\n", "\n")

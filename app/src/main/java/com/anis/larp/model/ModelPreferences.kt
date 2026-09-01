@@ -78,3 +78,9 @@ class ModelPreferences(context: Context) {
         private const val KEY_STT_MODEL = "stt_model"
     }
 }
+
+internal fun promptModelSupportsTargetLanguage(
+    modelId: String,
+    targetLanguage: LearningLanguage
+): Boolean = modelId != ModelPreferences.PROMPT_GEMINI_NANO ||
+    targetLanguage != LearningLanguage.SIMPLIFIED_CHINESE

@@ -45,4 +45,15 @@ class YoutubeTranscriptProviderTest {
         assertTrue(compacted.endsWith("word999"))
         assertEquals(2, Regex(Regex.escape("[…]")).findAll(compacted).count())
     }
+
+    @Test
+    fun simplifiedChineseMatchesCommonYoutubeLanguageVariants() {
+        assertTrue(
+            transcriptLanguageMatchScore("zh-Hans-CN", "zh-Hans") >
+                transcriptLanguageMatchScore("zh-Hans-CN", "zh")
+        )
+        assertTrue(transcriptLanguageMatchScore("zh-Hans-CN", "zh-CN") >= 0)
+        assertTrue(transcriptLanguageMatchScore("cmn-Hans-CN", "zh-Hans") >= 0)
+        assertEquals(-1, transcriptLanguageMatchScore("zh-Hans-CN", "zh-Hant-TW"))
+    }
 }

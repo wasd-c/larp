@@ -4,7 +4,10 @@ import java.util.Locale
 
 /** Local, deterministic guard against a model emitting the wrong BCP-47 tag. */
 internal fun localeMatchingSpokenText(text: String, requestedLocale: Locale): Locale {
-    if (text.any { it.code in 0x3400..0x9FFF }) return Locale.SIMPLIFIED_CHINESE
+    if (text.codePoints().anyMatch { codePoint ->
+            Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN
+        }
+    ) return Locale.SIMPLIFIED_CHINESE
     if (text.any { it.code in 0xAC00..0xD7AF }) return Locale.KOREA
 
     val words = WORD.findAll(text.lowercase(Locale.ROOT)).map { it.value }.toList()

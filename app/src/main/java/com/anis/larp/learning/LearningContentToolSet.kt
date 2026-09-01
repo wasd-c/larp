@@ -24,29 +24,29 @@ class LearningContentToolSet(
         t: String,
         @ToolParam(description = "Target 1 text.") x1: String,
         @ToolParam(description = "Target 1 native meaning.") m1: String,
-        @ToolParam(description = "Target 1 reading, or empty.") r1: String = "",
+        @ToolParam(description = "Target 1 reading aid; Hanyu Pinyin with tone marks for Chinese, otherwise empty if not needed.") r1: String = "",
         @ToolParam(description = "Target 2 text.") x2: String,
         @ToolParam(description = "Target 2 native meaning.") m2: String,
-        @ToolParam(description = "Target 2 reading, or empty.") r2: String = "",
+        @ToolParam(description = "Target 2 reading aid; Hanyu Pinyin with tone marks for Chinese, otherwise empty if not needed.") r2: String = "",
         @ToolParam(description = "Target 3 text.") x3: String,
         @ToolParam(description = "Target 3 native meaning.") m3: String,
-        @ToolParam(description = "Target 3 reading, or empty.") r3: String = "",
+        @ToolParam(description = "Target 3 reading aid; Hanyu Pinyin with tone marks for Chinese, otherwise empty if not needed.") r3: String = "",
         @ToolParam(description = "Short sentence 1.") s1: String,
         @ToolParam(description = "Sentence 1 native meaning.") sm1: String,
         @ToolParam(description = "Sentence 1 target indexes, comma separated.") i1: String,
-        @ToolParam(description = "Sentence 1 chunks separated by /, or empty.") c1: String = "",
+        @ToolParam(description = "Sentence 1 ordered chunks separated by /; required for Chinese.") c1: String = "",
         @ToolParam(description = "Short sentence 2.") s2: String,
         @ToolParam(description = "Sentence 2 native meaning.") sm2: String,
         @ToolParam(description = "Sentence 2 target indexes, comma separated.") i2: String,
-        @ToolParam(description = "Sentence 2 chunks separated by /, or empty.") c2: String = ""
+        @ToolParam(description = "Sentence 2 ordered chunks separated by /; required for Chinese.") c2: String = ""
     ): Map<String, String> {
         val languageTag = targetLanguageTag.orEmpty().ifBlank { "und" }
         val requested = explicitLessonContent(
             topic = t,
             targets = listOf(
-                LearningTarget(x1, m1, r1.ifBlank { null }),
-                LearningTarget(x2, m2, r2.ifBlank { null }),
-                LearningTarget(x3, m3, r3.ifBlank { null })
+                LearningTarget(x1, m1, r1.optionalGeneratedValue()),
+                LearningTarget(x2, m2, r2.optionalGeneratedValue()),
+                LearningTarget(x3, m3, r3.optionalGeneratedValue())
             ),
             sentences = listOf(
                 explicitSentence(s1, sm1, i1, c1),
@@ -99,8 +99,16 @@ fun explicitSentence(
     text = text.trim(),
     meaning = meaning.trim(),
     targetIndexes = indexes.split(',').mapNotNull { it.trim().toIntOrNull() },
-    chunks = chunks.split('/').map(String::trim).filter(String::isNotBlank)
+    chunks = chunks.optionalGeneratedValue()
+        .orEmpty()
+        .split('/')
+        .map(String::trim)
+        .filter(String::isNotBlank)
 )
+
+private fun String.optionalGeneratedValue(): String? = trim()
+    .takeIf(String::isNotBlank)
+    ?.takeUnless { it.equals("NONE", ignoreCase = true) }
 
 fun decodeLessonContent(topic: String, targets: String, sentences: String): LessonContent =
     LessonContent(

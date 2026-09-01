@@ -13,6 +13,7 @@ import com.anis.larp.model.DeviceAccelerationProfile
 import com.anis.larp.model.PromptModelRecord
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.requestsLearningLanguageSwitch
+import com.anis.larp.model.promptModelSupportsTargetLanguage
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -38,6 +39,7 @@ class PromptReplyRouter(
     suspend fun preloadSelectedModel(
         onPreparingModel: (String) -> Unit
     ): String? = modelMutex.withLock {
+        requirePromptModelSupports(preferences.targetLanguage)
         if (preferences.promptModelId == ModelPreferences.PROMPT_GEMINI_NANO) {
             liteRt.close()
             geminiNano.prepare {
@@ -254,7 +256,11 @@ class PromptReplyRouter(
         lessonContext: LessonChatContext? = null,
         onPreparingModel: (String) -> Unit,
         onNativeContentAction: (LearningContentAction) -> Unit = {}
-    ): GeneratedReply = if (
+    ): GeneratedReply {
+        requirePromptModelSupports(
+            LearningLanguage.fromLanguageTag(tutorContext.targetLanguage.toLanguageTag())
+        )
+        return if (
             preferences.promptModelId == ModelPreferences.PROMPT_GEMINI_NANO
         ) {
             liteRt.close()
@@ -290,6 +296,13 @@ class PromptReplyRouter(
                 onContentActionExecuted = onNativeContentAction
             )
         }
+    }
+
+    private fun requirePromptModelSupports(targetLanguage: LearningLanguage) {
+        check(promptModelSupportsTargetLanguage(preferences.promptModelId, targetLanguage)) {
+            "Gemini Nano n'est pas validé pour le chinois. Choisissez Gemma 4 dans les réglages."
+        }
+    }
 
     private suspend fun selectedCompatibleLiteRtRecord(): PromptModelRecord? {
         val requestedId = preferences.promptModelId

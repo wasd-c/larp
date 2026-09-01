@@ -5,6 +5,7 @@ import com.anis.larp.ui.freemode.LiteRtReplyGenerator
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeNotNull
 import org.junit.Test
 
 class ImportedModelEngineTest {
@@ -12,14 +13,13 @@ class ImportedModelEngineTest {
     fun selectedImportedModelInitializesOnAnAvailableBackend() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val preferences = ModelPreferences(context)
-        val record = requireNotNull(
-            PromptModelCatalog(context).find(preferences.promptModelId)
-        )
+        val record = PromptModelCatalog(context).find(preferences.promptModelId)
+        assumeNotNull(record)
         val generator = LiteRtReplyGenerator(context)
 
         try {
             val runtime = withTimeout(180_000L) {
-                generator.preload(record) { }
+                generator.preload(requireNotNull(record)) { }
             }
             println("Imported model runtime: $runtime")
             assertTrue(

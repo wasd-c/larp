@@ -16,7 +16,7 @@
     <string name="exercise_listening">Écoute en %1$s…</string>
     <string name="exercise_microphone_denied">Autorisation du microphone refusée.</string>
     <string name="exercise_typed_correct">Correct!</string>
-    <string name="exercise_pronunciation_correct">Bonne prononciation!</string>
+    <string name="exercise_pronunciation_correct">Phrase reconnue !</string>
     <string name="exercise_incorrect">Pas tout à fait. Réessayez.</string>
     <string name="exercise_heard">J’ai entendu : %1$s</string>
     <string name="exercise_drag_instruction">Glissez le bon mot dans la phrase</string>

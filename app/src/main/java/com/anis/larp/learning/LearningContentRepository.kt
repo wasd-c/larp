@@ -792,7 +792,7 @@ fun normalizeGeneratedExerciseDefinition(
 
         ExerciseType.WORD_ORDER -> {
             val orderedSegments = choices.takeIf { it.size >= 2 }
-                ?: expectedAnswer.trim().split(Regex("\\s+")).filter(String::isNotBlank)
+                ?: automaticLearningChunks(expectedAnswer)
             if (orderedSegments.size >= 2) {
                 GeneratedExerciseDefinition(requestedType, orderedSegments.take(16))
             } else {

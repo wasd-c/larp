@@ -277,7 +277,7 @@ class QwenSpeechRecognizer private constructor(context: Context) {
                         output.write(value.toByteArray())
                         output.write("\r\n".toByteArray())
                     }
-                    field("language", locale.toLanguageTag())
+                    field("language", qwenLanguageHint(locale))
                     field("response_format", "json")
                     field("temperature", "0")
                     field("max_tokens", "256")
@@ -370,4 +370,22 @@ internal fun sanitizeQwenTranscript(rawText: String): String {
         .replace(Regex("<\\|[^>]+\\|>"), " ")
         .replace(Regex("\\s+"), " ")
         .trim()
+}
+
+internal fun qwenLanguageHint(locale: Locale): String = when (
+    locale.language.lowercase(Locale.ROOT)
+) {
+    "zh", "cmn" -> "Chinese"
+    "en" -> "English"
+    "fr" -> "French"
+    "es" -> "Spanish"
+    "de" -> "German"
+    "it" -> "Italian"
+    "pt" -> "Portuguese"
+    "ja" -> "Japanese"
+    "ko" -> "Korean"
+    "ar" -> "Arabic"
+    "nl" -> "Dutch"
+    "ru" -> "Russian"
+    else -> locale.getDisplayLanguage(Locale.ENGLISH).ifBlank { "English" }
 }

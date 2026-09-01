@@ -16,7 +16,7 @@
     <string name="exercise_listening">Listening in %1$s…</string>
     <string name="exercise_microphone_denied">Microphone permission denied.</string>
     <string name="exercise_typed_correct">Correct!</string>
-    <string name="exercise_pronunciation_correct">Good pronunciation!</string>
+    <string name="exercise_pronunciation_correct">Speech recognized!</string>
     <string name="exercise_incorrect">Not quite. Try again.</string>
     <string name="exercise_heard">I heard: %1$s</string>
     <string name="exercise_drag_instruction">Drag the correct word into the sentence</string>

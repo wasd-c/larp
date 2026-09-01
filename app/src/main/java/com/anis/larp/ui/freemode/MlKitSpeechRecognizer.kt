@@ -5,6 +5,7 @@ import android.os.Build
 import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.speechRecognitionLocaleFor
+import com.anis.larp.model.textToSpeechLocaleFor
 import com.anis.larp.learning.Exercise
 import com.anis.larp.learning.LearningContentAction
 import com.anis.larp.learning.LearningContentRepository
@@ -97,22 +98,35 @@ class MlKitSpeechRecognizer(
                     }
                 } else {
                     qwenSpeechRecognizer.release()
-                    val locale = speechRecognitionLocaleFor(preferences.nativeLanguageTag)
-                    val selected = mlKitRecognizerProvider.select(
-                        locale,
-                        preferences.sttModelId
-                    ) ?: throw IllegalStateException(
-                        "Le modèle de reconnaissance vocale sélectionné n'est pas disponible."
-                    )
-                    selected.recognizer.close()
+                    val requiredLocales = listOf(
+                        speechRecognitionLocaleFor(preferences.nativeLanguageTag),
+                        preferences.targetLanguage.speechRecognitionLocale
+                    ).distinctBy(Locale::toLanguageTag)
+                    requiredLocales.forEach { locale ->
+                        updateIdleStatus(
+                            "Préparation de l'écoute ${locale.toLanguageTag()}…",
+                            modelLabel
+                        )
+                        val selected = mlKitRecognizerProvider.select(
+                            locale,
+                            preferences.sttModelId
+                        ) ?: throw IllegalStateException(
+                            "La reconnaissance vocale n'est pas disponible pour " +
+                                locale.toLanguageTag() + "."
+                        )
+                        if (selected.modelId != preferences.sttModelId) {
+                            preferences.sttModelId = selected.modelId
+                        }
+                        selected.recognizer.close()
+                    }
                 }
-                preferences.ttsVoiceName?.let { selectedVoice ->
-                    updateIdleStatus("Préparation de la voix hors ligne…", modelLabel)
-                    speechSynthesizer.preload(
-                        requestedLocale = preferences.targetLanguage.locale,
-                        selectedVoiceName = selectedVoice
-                    )
-                }
+                updateIdleStatus("Préparation de la voix hors ligne…", modelLabel)
+                speechSynthesizer.preload(
+                    requestedLocale = textToSpeechLocaleFor(
+                        preferences.targetLanguage.languageTag
+                    ),
+                    selectedVoiceName = preferences.ttsVoiceName
+                )
                 val readyMessage = replyGenerator.preloadSelectedModel { message ->
                     updateIdleStatus(message, modelLabel)
                 } ?: throw IllegalStateException(
@@ -159,7 +173,7 @@ class MlKitSpeechRecognizer(
     suspend fun speakPracticeWord(text: String, languageTag: String) {
         speechSynthesizer.speak(
             text = text,
-            requestedLocale = speechRecognitionLocaleFor(languageTag),
+            requestedLocale = textToSpeechLocaleFor(languageTag),
             selectedVoiceName = preferences.ttsVoiceName
         )
     }
@@ -178,6 +192,9 @@ class MlKitSpeechRecognizer(
         ) ?: throw IllegalStateException(
             "La reconnaissance vocale sur l'appareil n'est pas disponible pour ${locale.toLanguageTag()}."
         )
+        if (selected.modelId != preferences.sttModelId) {
+            preferences.sttModelId = selected.modelId
+        }
         return try {
             var recognized = ""
             val request = speechRecognizerRequest {
