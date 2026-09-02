@@ -3,6 +3,14 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+fun telemetryBuildValue(name: String): String = providers.gradleProperty(name)
+    .orElse(providers.environmentVariable(name))
+    .orElse("")
+    .get()
+
+fun String.asBuildConfigString(): String =
+    "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
 val llamaCppRelease = "b9637"
 val llamaCppArchiveName = "llama-$llamaCppRelease-bin-android-arm64.tar.gz"
 val llamaCppArchive = layout.buildDirectory.file("downloads/$llamaCppArchiveName")
@@ -80,6 +88,27 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        buildConfigField(
+            "String",
+            "TELEMETRY_CLIENT_TOKEN",
+            telemetryBuildValue("LARP_TELEMETRY_CLIENT_TOKEN").asBuildConfigString()
+        )
+        buildConfigField(
+            "String",
+            "TELEMETRY_RUM_ENDPOINT",
+            telemetryBuildValue("LARP_TELEMETRY_RUM_ENDPOINT").asBuildConfigString()
+        )
+        buildConfigField(
+            "String",
+            "TELEMETRY_LOGS_ENDPOINT",
+            telemetryBuildValue("LARP_TELEMETRY_LOGS_ENDPOINT").asBuildConfigString()
+        )
+        buildConfigField(
+            "String",
+            "TELEMETRY_APPLICATION_ID",
+            telemetryBuildValue("LARP_TELEMETRY_APPLICATION_ID").asBuildConfigString()
+        )
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -96,6 +125,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     sourceSets.getByName("main").jniLibs.srcDir(qwenRuntimeDirectory.get().asFile)
     packaging {
@@ -122,6 +152,9 @@ dependencies {
     implementation(libs.litert.lm.android)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.youtube.transcript.api)
+    implementation(libs.openobserve.android.rum)
+    implementation(libs.openobserve.android.logs)
+    implementation(libs.openobserve.android.ndk)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

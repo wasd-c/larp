@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.PrivacyTip
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
@@ -39,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -69,6 +71,9 @@ import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.QwenAsrModel
 import com.anis.larp.model.displayNameIn
+import com.anis.larp.telemetry.Telemetry
+import com.anis.larp.telemetry.TelemetryConsent
+import com.anis.larp.telemetry.TelemetryPreferences
 import com.anis.larp.ui.freemode.FreeModeSessionStore
 import com.anis.larp.ui.preview.LarpPhonePreviews
 import com.anis.larp.ui.preview.LarpPreviewData
@@ -98,6 +103,12 @@ fun ModelSettingsScreen(
     val sessionStore = remember(context.applicationContext) {
         FreeModeSessionStore.getInstance(context.applicationContext)
     }
+    val telemetryPreferences = remember(context.applicationContext) {
+        TelemetryPreferences(context.applicationContext)
+    }
+    var telemetryEnabled by remember {
+        mutableStateOf(telemetryPreferences.consent == TelemetryConsent.GRANTED)
+    }
     var refreshKey by remember { mutableIntStateOf(0) }
     var inventory by remember { mutableStateOf<ModelInventory?>(null) }
     var loadingError by remember { mutableStateOf<String?>(null) }
@@ -121,15 +132,31 @@ fun ModelSettingsScreen(
                     .onSuccess { record ->
                         val profile = DeviceAccelerationProfile.detect()
                         if (!profile.supportsArtifact(record.artifactFileName)) {
+                            Telemetry.event(
+                                name = "model_import_rejected",
+                                attributes = mapOf(
+                                    "category" to "prompt_model",
+                                    "result" to "incompatible"
+                                )
+                            )
                             importError =
                                 "Ce modèle cible un autre SoC et ferait planter LiteRT sur " +
                                     "cet appareil."
                         } else {
                             preferences.promptModelId = record.id
+                            Telemetry.event(
+                                name = "model_import_completed",
+                                attributes = mapOf(
+                                    "category" to "prompt_model",
+                                    "model_id" to record.id,
+                                    "result" to "success"
+                                )
+                            )
                             refreshKey++
                         }
                     }
                     .onFailure { error ->
+                        Telemetry.error("prompt_model_import", error)
                         importError = error.message ?: "Import du modèle impossible."
                     }
                 importingPromptModel = false
@@ -149,8 +176,17 @@ fun ModelSettingsScreen(
                     ModelDownloadManager(context.applicationContext)
                         .cancelQwenAsrDownloads()
                     preferences.sttModelId = ModelPreferences.STT_QWEN_3_ASR
+                    Telemetry.event(
+                        name = "model_import_completed",
+                        attributes = mapOf(
+                            "category" to "stt_model",
+                            "model_id" to ModelPreferences.STT_QWEN_3_ASR,
+                            "result" to "success"
+                        )
+                    )
                     refreshKey++
                 }.onFailure { error ->
+                    Telemetry.error("qwen_model_import", error)
                     qwenImportError = error.message ?: "Import des fichiers Qwen impossible."
                 }
                 importingQwenFiles = false
@@ -178,6 +214,7 @@ fun ModelSettingsScreen(
         }.onSuccess {
             inventory = it
         }.onFailure {
+            Telemetry.error("model_inventory", it)
             loadingError = it.message ?: "Inventaire des modèles indisponible."
         }
     }
@@ -229,6 +266,13 @@ fun ModelSettingsScreen(
                     currentTargetLanguage = language
                     preferences.targetLanguage = language
                     preferences.ttsVoiceName = null
+                    Telemetry.event(
+                        name = "setting_changed",
+                        attributes = mapOf(
+                            "category" to "target_language",
+                            "language" to language.languageTag
+                        )
+                    )
                     refreshKey++
                 }
             )
@@ -238,6 +282,23 @@ fun ModelSettingsScreen(
                 sessionCount = sessionStore.sessionFiles().size,
                 hasActiveSession = sessionStore.activeSessionId() != null
             )
+            if (Telemetry.isConfigured) {
+                TelemetrySettingsCard(
+                    enabled = telemetryEnabled,
+                    onEnabledChange = { shouldEnable ->
+                        Telemetry.setConsent(
+                            context = context.applicationContext,
+                            consent = if (shouldEnable) {
+                                TelemetryConsent.GRANTED
+                            } else {
+                                TelemetryConsent.DENIED
+                            },
+                            source = "settings"
+                        )
+                        telemetryEnabled = shouldEnable
+                    }
+                )
+            }
 
             when {
                 inventory != null -> {
@@ -251,12 +312,23 @@ fun ModelSettingsScreen(
                         emptyMessage = "Aucune voix hors ligne compatible n'est installée.",
                         onSelected = {
                             preferences.ttsVoiceName = it
+                            Telemetry.event(
+                                name = "setting_changed",
+                                attributes = mapOf(
+                                    "category" to "tts_voice",
+                                    "result" to "selected"
+                                )
+                            )
                             refreshKey++
                         },
                         emptyActionLabel = "Installer une voix hors ligne",
                         onEmptyAction = {
                             val intent = Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)
                             if (intent.resolveActivity(context.packageManager) != null) {
+                                Telemetry.event(
+                                    name = "tts_installer_opened",
+                                    attributes = mapOf("result" to "available")
+                                )
                                 ttsDataInstaller.launch(intent)
                             } else {
                                 loadingError =
@@ -282,6 +354,13 @@ fun ModelSettingsScreen(
                         emptyMessage = "Aucun modèle de prompt n'est prêt.",
                         onSelected = {
                             preferences.promptModelId = it
+                            Telemetry.event(
+                                name = "setting_changed",
+                                attributes = mapOf(
+                                    "category" to "prompt_model",
+                                    "model_id" to it
+                                )
+                            )
                             refreshKey++
                         }
                     )
@@ -294,6 +373,13 @@ fun ModelSettingsScreen(
                         emptyMessage = "Aucun modèle STT n'est déjà disponible pour cette langue.",
                         onSelected = {
                             preferences.sttModelId = it
+                            Telemetry.event(
+                                name = "setting_changed",
+                                attributes = mapOf(
+                                    "category" to "stt_model",
+                                    "stt_engine" to it
+                                )
+                            )
                             refreshKey++
                         }
                     )
@@ -433,6 +519,49 @@ private fun LearningLanguageCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun TelemetrySettingsCard(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("telemetry_settings"),
+        shape = MaterialTheme.shapes.extraLarge,
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Rounded.PrivacyTip,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Télémétrie facultative",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    text = "Évènements techniques, performances, erreurs et crashs. " +
+                        "Jamais d'audio, de messages, de réponses ou de replay.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange
+            )
         }
     }
 }

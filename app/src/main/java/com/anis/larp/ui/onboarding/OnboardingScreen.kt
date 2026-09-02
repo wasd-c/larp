@@ -63,6 +63,7 @@ import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.PromptModelRecord
 import com.anis.larp.model.QwenAsrModel
+import com.anis.larp.telemetry.Telemetry
 import com.anis.larp.model.commonNativeLanguages
 import com.anis.larp.model.displayNameIn
 import com.anis.larp.model.parseHuggingFaceModelReference
@@ -176,7 +177,15 @@ fun OnboardingScreen(
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) {
+    ) { granted ->
+        Telemetry.event(
+            name = "permission_result",
+            attributes = mapOf(
+                "permission" to "notifications",
+                "result" to if (granted) "granted" else "denied",
+                "source" to "onboarding"
+            )
+        )
         pendingCompletion?.let(onComplete)
         pendingCompletion = null
     }
@@ -188,9 +197,25 @@ fun OnboardingScreen(
             importError = null
             coroutineScope.launch {
                 runCatching { promptCatalog.importModel(uri) }
-                    .onSuccess { importedModel = it }
-                    .onFailure {
-                        importError = it.message ?: "Import du modèle impossible."
+                    .onSuccess {
+                        importedModel = it
+                        Telemetry.event(
+                            name = "model_import_completed",
+                            attributes = mapOf(
+                                "category" to "prompt_model",
+                                "model_id" to it.id,
+                                "source" to "onboarding",
+                                "result" to "success"
+                            )
+                        )
+                    }
+                    .onFailure { error ->
+                        Telemetry.error(
+                            operation = "prompt_model_import",
+                            throwable = error,
+                            attributes = mapOf("source" to "onboarding")
+                        )
+                        importError = error.message ?: "Import du modèle impossible."
                     }
                 importingFile = false
             }
@@ -207,7 +232,21 @@ fun OnboardingScreen(
                     QwenAsrModel.importArtifacts(context.applicationContext, uris)
                 }.onSuccess {
                     qwenAvailable = true
+                    Telemetry.event(
+                        name = "model_import_completed",
+                        attributes = mapOf(
+                            "category" to "stt_model",
+                            "model_id" to ModelPreferences.STT_QWEN_3_ASR,
+                            "source" to "onboarding",
+                            "result" to "success"
+                        )
+                    )
                 }.onFailure { error ->
+                    Telemetry.error(
+                        operation = "qwen_model_import",
+                        throwable = error,
+                        attributes = mapOf("source" to "onboarding")
+                    )
                     qwenImportError = error.message ?: "Import des fichiers Qwen impossible."
                 }
                 importingQwenFiles = false

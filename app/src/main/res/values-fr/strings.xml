@@ -1,5 +1,16 @@
 <resources>
     <string name="app_name">larp</string>
+    <string name="telemetry_consent_title">Aider à améliorer larp ?</string>
+    <string name="telemetry_consent_intro">La télémétrie facultative aide à diagnostiquer les vrais problèmes et à améliorer l’apprentissage. Rien n’est envoyé avant votre choix.</string>
+    <string name="telemetry_consent_events_title">Évènements et performances</string>
+    <string name="telemetry_consent_events_body">Écrans consultés, résultat des fonctions, durées, type d’appareil, version Android et modèle/backend local utilisé.</string>
+    <string name="telemetry_consent_errors_title">Erreurs, ANR et crashs</string>
+    <string name="telemetry_consent_errors_body">Les types d’erreur et traces techniques aident à trouver les pannes. L’enregistrement de session n’est jamais activé.</string>
+    <string name="telemetry_consent_private_title">Votre apprentissage reste privé</string>
+    <string name="telemetry_consent_private_body">Aucun audio, transcription, message, réponse IA, contenu de leçon, réponse d’exercice, identifiant de compte ou identifiant publicitaire n’est envoyé.</string>
+    <string name="telemetry_consent_change_later">Vous pourrez changer ce choix dans Réglages. Refuser ne limite aucune fonction.</string>
+    <string name="telemetry_consent_accept">Accepter et continuer</string>
+    <string name="telemetry_consent_decline">Continuer sans télémétrie</string>
     <string name="exercise_back">Retour</string>
     <string name="exercise_step_progress">Étape %1$d sur %2$d</string>
     <string name="exercise_previous">Précédent</string>

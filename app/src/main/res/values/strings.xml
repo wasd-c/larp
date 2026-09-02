@@ -1,5 +1,16 @@
 <resources>
     <string name="app_name">larp</string>
+    <string name="telemetry_consent_title">Help improve larp?</string>
+    <string name="telemetry_consent_intro">Optional telemetry helps diagnose real problems and improve the learning experience. Nothing is sent before you choose.</string>
+    <string name="telemetry_consent_events_title">App events and performance</string>
+    <string name="telemetry_consent_events_body">Screens visited, feature outcomes, durations, device type, Android version, and the on-device model/backend used.</string>
+    <string name="telemetry_consent_errors_title">Errors, ANRs, and crashes</string>
+    <string name="telemetry_consent_errors_body">Technical error types and stack traces help identify failures. Session replay is never enabled.</string>
+    <string name="telemetry_consent_private_title">Your learning stays private</string>
+    <string name="telemetry_consent_private_body">No voice audio, transcript, message, AI reply, lesson content, answer, account identifier, or advertising identifier is sent.</string>
+    <string name="telemetry_consent_change_later">You can change this choice at any time in Settings. Refusing does not limit the app.</string>
+    <string name="telemetry_consent_accept">Accept and continue</string>
+    <string name="telemetry_consent_decline">Continue without telemetry</string>
     <string name="exercise_back">Back</string>
     <string name="exercise_step_progress">Step %1$d of %2$d</string>
     <string name="exercise_previous">Previous</string>

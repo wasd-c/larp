@@ -250,13 +250,20 @@ fun LessonsScreen(
         (String) -> Unit
     ) -> GeneratedReply = { _, _, _, _ ->
         throw IllegalStateException("Le professeur n'est pas disponible.")
-    }
+    },
+    onLessonOpenChanged: (Boolean) -> Unit = {}
 ) {
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var remixId by rememberSaveable { mutableStateOf<String?>(null) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var topicFilter by rememberSaveable { mutableStateOf<String?>(null) }
     val searchRevealState = remember { LibrarySearchRevealState() }
+    LaunchedEffect(selectedId != null) {
+        onLessonOpenChanged(selectedId != null)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onLessonOpenChanged(false) }
+    }
     LaunchedEffect(requestedOpenId) {
         if (requestedOpenId != null && lessons.any { it.id == requestedOpenId }) {
             selectedId = requestedOpenId

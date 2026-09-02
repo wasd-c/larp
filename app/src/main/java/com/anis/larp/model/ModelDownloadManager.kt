@@ -7,6 +7,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.anis.larp.telemetry.Telemetry
 import java.util.UUID
 
 class ModelDownloadManager(context: Context) {
@@ -65,6 +66,14 @@ class ModelDownloadManager(context: Context) {
             uniqueWorkName(modelId),
             ExistingWorkPolicy.KEEP,
             request
+        )
+        Telemetry.event(
+            name = "model_download_requested",
+            attributes = mapOf(
+                "model_id" to modelId,
+                "acceleration" to accelerationKind.name.lowercase(),
+                "cached" to (reusableModel != null)
+            )
         )
         return DownloadRequest(modelId = modelId, workId = request.id)
     }
@@ -126,6 +135,13 @@ class ModelDownloadManager(context: Context) {
             continuation = continuation.then(request)
         }
         continuation.enqueue()
+        Telemetry.event(
+            name = "model_download_requested",
+            attributes = mapOf(
+                "model_id" to ModelPreferences.STT_QWEN_3_ASR,
+                "count" to requests.size
+            )
+        )
         return DownloadRequest(
             modelId = ModelPreferences.STT_QWEN_3_ASR,
             workId = requests.last().id
@@ -134,6 +150,10 @@ class ModelDownloadManager(context: Context) {
 
     fun cancelQwenAsrDownloads() {
         workManager.cancelAllWorkByTag(QWEN_ASR_DOWNLOAD_TAG)
+        Telemetry.event(
+            name = "model_download_cancel_requested",
+            attributes = mapOf("model_id" to ModelPreferences.STT_QWEN_3_ASR)
+        )
     }
 
     data class DownloadRequest(

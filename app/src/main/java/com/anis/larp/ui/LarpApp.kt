@@ -38,17 +38,56 @@ import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.DeviceAccelerationProfile
 import com.anis.larp.model.QwenAsrModel
+import com.anis.larp.telemetry.Telemetry
+import com.anis.larp.telemetry.TelemetryConsent
+import com.anis.larp.telemetry.TelemetryGate
+import com.anis.larp.telemetry.TelemetryPreferences
 import com.anis.larp.ui.onboarding.OnboardingScreen
 import com.anis.larp.ui.onboarding.PromptSetup
 import com.anis.larp.ui.settings.ModelSettingsScreen
+import com.anis.larp.ui.telemetry.TelemetryConsentScreen
 
 @Composable
 fun LarpApp(
     animationsEnabled: Boolean = true,
     skipOnboarding: Boolean = false,
-    skipModelReadiness: Boolean = false
+    skipModelReadiness: Boolean = false,
+    skipTelemetryConsent: Boolean = false
 ) {
     val context = LocalContext.current
+    val telemetryPreferences = remember(context.applicationContext) {
+        TelemetryPreferences(context.applicationContext)
+    }
+    var telemetryConsent by remember {
+        mutableStateOf(telemetryPreferences.consent)
+    }
+    if (TelemetryGate.shouldShowConsent(
+            consent = telemetryConsent,
+            configured = Telemetry.isConfigured,
+            skipped = skipTelemetryConsent
+        )
+    ) {
+        TelemetryConsentScreen(
+            onAccept = {
+                Telemetry.setConsent(
+                    context = context.applicationContext,
+                    consent = TelemetryConsent.GRANTED,
+                    source = "first_launch"
+                )
+                telemetryConsent = TelemetryConsent.GRANTED
+            },
+            onDecline = {
+                Telemetry.setConsent(
+                    context = context.applicationContext,
+                    consent = TelemetryConsent.DENIED,
+                    source = "first_launch"
+                )
+                telemetryConsent = TelemetryConsent.DENIED
+            }
+        )
+        return
+    }
+
     val preferences = remember(context.applicationContext) {
         ModelPreferences(context.applicationContext)
     }
@@ -67,6 +106,10 @@ fun LarpApp(
         WorkManager.getInstance(context.applicationContext)
             .getWorkInfosByTagFlow(ModelDownloadManager.DOWNLOAD_TAG)
     }.collectAsState(initial = emptyList())
+
+    LaunchedEffect(Unit) {
+        Telemetry.event("app_ui_started")
+    }
 
     fun enqueueMissingSelectedModels() {
         val profile = DeviceAccelerationProfile.detect()
@@ -94,12 +137,19 @@ fun LarpApp(
     fun closeModelSettings() {
         if (!modelSettingsOpen) return
 
+        Telemetry.event("settings_closed")
         modelSettingsOpen = false
         downloadSchedulingComplete = false
         enqueueMissingSelectedModels()
         downloadSchedulingComplete = true
         VoiceConversationController.getInstance(context.applicationContext)
             .preloadSelectedModel()
+    }
+
+    fun openModelSettings() {
+        if (modelSettingsOpen) return
+        Telemetry.event("settings_opened")
+        modelSettingsOpen = true
     }
 
     LaunchedEffect(
@@ -155,6 +205,14 @@ fun LarpApp(
                     targetLanguage = selection.targetLanguage,
                     promptModelId = selection.promptSetup.modelId,
                     sttModelId = selection.sttModelId
+                )
+                Telemetry.event(
+                    name = "onboarding_completed",
+                    attributes = mapOf(
+                        "language" to selection.targetLanguage.languageTag,
+                        "model_id" to selection.promptSetup.modelId,
+                        "stt_engine" to selection.sttModelId
+                    )
                 )
                 onboardingComplete = true
             }
@@ -229,11 +287,12 @@ fun LarpApp(
                 null
             },
             onRetry = {
+                Telemetry.event("model_download_retried")
                 downloadSchedulingComplete = false
                 enqueueMissingSelectedModels()
                 downloadSchedulingComplete = true
             },
-            onOpenSettings = { modelSettingsOpen = true }
+            onOpenSettings = ::openModelSettings
         )
         return
     }
@@ -252,6 +311,7 @@ fun LarpApp(
     var requestedLessonId by remember { mutableStateOf<String?>(null) }
     var exerciseHasUnsavedProgress by remember { mutableStateOf(false) }
     var exercisePlayerOpen by remember { mutableStateOf(false) }
+    var lessonOpen by remember { mutableStateOf(false) }
     var pendingDestination by remember { mutableStateOf<AppDestination?>(null) }
     fun hasNotificationPermission(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
@@ -263,6 +323,13 @@ fun LarpApp(
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
+        Telemetry.event(
+            name = "permission_result",
+            attributes = mapOf(
+                "permission" to "notifications",
+                "result" to if (granted) "granted" else "denied"
+            )
+        )
         if (granted && selectedDestination == AppDestination.LEARN) {
             conversationController.startConversation()
         } else if (!granted) {
@@ -272,6 +339,13 @@ fun LarpApp(
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
+        Telemetry.event(
+            name = "permission_result",
+            attributes = mapOf(
+                "permission" to "microphone",
+                "result" to if (granted) "granted" else "denied"
+            )
+        )
         if (granted && selectedDestination == AppDestination.LEARN) {
             if (hasNotificationPermission()) {
                 conversationController.startConversation()
@@ -293,10 +367,20 @@ fun LarpApp(
             statusMessage = uiState.statusMessage
                 ?: "Chargement des modèles sélectionnés en mémoire…",
             errorMessage = uiState.modelReadinessError,
-            onRetry = conversationController::preloadSelectedModel,
-            onOpenSettings = { modelSettingsOpen = true }
+            onRetry = {
+                Telemetry.event("model_preload_retried")
+                conversationController.preloadSelectedModel()
+            },
+            onOpenSettings = ::openModelSettings
         )
         return
+    }
+
+    LaunchedEffect(selectedDestination) {
+        Telemetry.event(
+            name = "screen_viewed",
+            attributes = mapOf("screen" to selectedDestination.name.lowercase())
+        )
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -304,12 +388,18 @@ fun LarpApp(
             AppDestination.LEARN -> FreeModeScreen(
                 uiState = uiState,
                 animationsEnabled = animationsEnabled,
-                onOpenSettings = { modelSettingsOpen = true },
+                onOpenSettings = ::openModelSettings,
                 onSendText = conversationController::sendTextMessage,
                 onDismissCreatedContent = {
                     conversationController.dismissCreatedContent()
                 },
                 onOpenCreatedContent = { content ->
+                    Telemetry.event(
+                        name = "created_content_opened",
+                        attributes = mapOf(
+                            "content_kind" to content.kind.name.lowercase()
+                        )
+                    )
                     conversationController.dismissCreatedContent()
                     conversationController.stopConversation()
                     when (content.kind) {
@@ -354,6 +444,10 @@ fun LarpApp(
                 },
                 onArchive = { exercise ->
                     learningContentRepository.archiveExercise(exercise.id)
+                    Telemetry.event(
+                        "learning_content_archived",
+                        mapOf("content_kind" to "exercise")
+                    )
                 },
                 onRemix = { exercise, guidance ->
                     conversationController.remixExercise(exercise, guidance)
@@ -365,9 +459,22 @@ fun LarpApp(
                         elapsedMillis = elapsedMillis,
                         hintsUsed = hintsUsed
                     )
+                    Telemetry.event(
+                        name = "exercise_completed",
+                        attributes = mapOf(
+                            "mistakes" to mistakes,
+                            "elapsed_ms" to elapsedMillis,
+                            "hints_used" to hintsUsed,
+                            "language" to exercise.languageTag
+                        )
+                    )
                 },
                 onRateDifficulty = { exercise, rating ->
                     learningContentRepository.rateExercise(exercise.id, rating)
+                    Telemetry.event(
+                        name = "exercise_difficulty_rated",
+                        attributes = mapOf("rating" to rating)
+                    )
                 },
                 onSpeakWord = { text, languageTag ->
                     conversationController.speakPracticeWord(
@@ -387,7 +494,14 @@ fun LarpApp(
                     conversationController.importExerciseFromYoutube(videoUrl)
                 },
                 onExerciseProgressChanged = { exerciseHasUnsavedProgress = it },
-                onExerciseOpenChanged = { exercisePlayerOpen = it }
+                onExerciseOpenChanged = { isOpen ->
+                    if (exercisePlayerOpen != isOpen) {
+                        Telemetry.event(
+                            if (isOpen) "exercise_opened" else "exercise_closed"
+                        )
+                    }
+                    exercisePlayerOpen = isOpen
+                }
             )
             AppDestination.LESSONS -> LessonsScreen(
                 requestedOpenId = requestedLessonId,
@@ -397,6 +511,10 @@ fun LarpApp(
                 },
                 onArchive = { lesson ->
                     learningContentRepository.archiveLesson(lesson.id)
+                    Telemetry.event(
+                        "learning_content_archived",
+                        mapOf("content_kind" to "lesson")
+                    )
                 },
                 onRemix = { lesson, guidance ->
                     conversationController.remixLesson(lesson, guidance)
@@ -408,12 +526,26 @@ fun LarpApp(
                         conversationHistory = history,
                         onPreparingModel = onPreparingModel
                     )
+                },
+                onLessonOpenChanged = { isOpen ->
+                    if (lessonOpen != isOpen) {
+                        Telemetry.event(
+                            if (isOpen) "lesson_opened" else "lesson_closed"
+                        )
+                    }
+                    lessonOpen = isOpen
                 }
             )
             AppDestination.PROFILE -> ProfileScreen(
                 dictionaryOpen = dictionaryOpen,
-                onOpenDictionary = { dictionaryOpen = true },
-                onCloseDictionary = { dictionaryOpen = false },
+                onOpenDictionary = {
+                    Telemetry.event("dictionary_opened")
+                    dictionaryOpen = true
+                },
+                onCloseDictionary = {
+                    Telemetry.event("dictionary_closed")
+                    dictionaryOpen = false
+                },
                 exercises = learningContent.exercises.filter {
                     it.archivedAtMillis == null
                 },
@@ -428,6 +560,13 @@ fun LarpApp(
         if (!exercisePlayerOpen) ExpressiveNavigationBar(
             selectedDestination = selectedDestination,
             onDestinationSelected = { destination ->
+                Telemetry.event(
+                    name = "navigation_selected",
+                    attributes = mapOf(
+                        "from" to selectedDestination.name.lowercase(),
+                        "to" to destination.name.lowercase()
+                    )
+                )
                 if (
                     selectedDestination == AppDestination.EXERCISES &&
                     exerciseHasUnsavedProgress &&
@@ -452,8 +591,12 @@ fun LarpApp(
 
         pendingDestination?.let { destination ->
             UnsavedExerciseExitDialog(
-                onDismiss = { pendingDestination = null },
+                onDismiss = {
+                    Telemetry.event("unsaved_exercise_exit_cancelled")
+                    pendingDestination = null
+                },
                 onConfirm = {
+                    Telemetry.event("unsaved_exercise_exit_confirmed")
                     pendingDestination = null
                     exerciseHasUnsavedProgress = false
                     selectedDestination = destination

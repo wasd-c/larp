@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.net.Uri
+import android.os.SystemClock
 import android.os.StatFs
 import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
@@ -14,6 +15,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.anis.larp.R
+import com.anis.larp.telemetry.Telemetry
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URI
@@ -54,11 +56,24 @@ class ModelDownloadWorker(
             modelId.isBlank() ||
             displayName.isBlank()
         ) {
+            Telemetry.error(
+                operation = "model_download_validation",
+                throwable = IllegalArgumentException("Invalid model download input."),
+                attributes = mapOf("model_id" to modelId)
+            )
             return@withContext Result.failure(
                 workDataOf(KEY_ERROR to "Dépôt Hugging Face invalide.")
             )
         }
 
+        val startedAt = SystemClock.elapsedRealtime()
+        Telemetry.event(
+            name = "model_download_started",
+            attributes = mapOf(
+                "model_id" to modelId,
+                "attempt" to runAttemptCount
+            )
+        )
         createNotificationChannel()
         setForeground(createForegroundInfo(displayName, 0, null))
 
@@ -101,6 +116,15 @@ class ModelDownloadWorker(
                 message =
                     "Modèle prêt dans ${SharedModelStore.USER_VISIBLE_DIRECTORY}"
             )
+            Telemetry.event(
+                name = "model_download_completed",
+                attributes = mapOf(
+                    "model_id" to modelId,
+                    "size_bytes" to sharedModel.sizeBytes,
+                    "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                    "result" to "success"
+                )
+            )
             Result.success(
                 workDataOf(
                     KEY_MODEL_ID to modelId,
@@ -109,6 +133,14 @@ class ModelDownloadWorker(
                 )
             )
         } catch (cancellation: CancellationException) {
+            Telemetry.event(
+                name = "model_download_cancelled",
+                attributes = mapOf(
+                    "model_id" to modelId,
+                    "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                    "result" to "cancelled"
+                )
+            )
             activeDownloadUri?.let(sharedStore::delete)
             activeDownloadUri = null
             throw cancellation
@@ -117,13 +149,41 @@ class ModelDownloadWorker(
             if (isStopped) {
                 activeDownloadUri?.let(sharedStore::delete)
                 activeDownloadUri = null
+                Telemetry.event(
+                    name = "model_download_cancelled",
+                    attributes = mapOf(
+                        "model_id" to modelId,
+                        "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                        "result" to "cancelled"
+                    )
+                )
                 Result.failure(workDataOf(KEY_ERROR to "Téléchargement annulé."))
             } else if (error is IOException && runAttemptCount < 3) {
+                Telemetry.error(
+                    operation = "model_download_retry",
+                    throwable = error,
+                    attributes = mapOf(
+                        "model_id" to modelId,
+                        "attempt" to runAttemptCount,
+                        "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                        "result" to "retry"
+                    )
+                )
                 Result.retry()
             } else {
                 activeDownloadUri?.let(sharedStore::delete)
                 activeDownloadUri = null
                 showFinishedNotification(displayName, message, failed = true)
+                Telemetry.error(
+                    operation = "model_download",
+                    throwable = error,
+                    attributes = mapOf(
+                        "model_id" to modelId,
+                        "attempt" to runAttemptCount,
+                        "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                        "result" to "failure"
+                    )
+                )
                 Result.failure(workDataOf(KEY_ERROR to message))
             }
         }

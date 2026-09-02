@@ -14,6 +14,7 @@ mlkitGenAiPrompt = "1.0.0-beta2"
 litertLm = "0.14.0"
 workManager = "2.11.2"
 youtubeTranscriptApi = "0.4.0"
+openObserveAndroid = "0.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -36,6 +37,9 @@ mlkit-genai-prompt = { group = "com.google.mlkit", name = "genai-prompt", versio
 litert-lm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version.ref = "litertLm" }
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workManager" }
 youtube-transcript-api = { group = "io.github.thoroldvix", name = "youtube-transcript-api", version.ref = "youtubeTranscriptApi" }
+openobserve-android-rum = { group = "ai.openobserve", name = "o2-sdk-android-rum", version.ref = "openObserveAndroid" }
+openobserve-android-logs = { group = "ai.openobserve", name = "o2-sdk-android-logs", version.ref = "openObserveAndroid" }
+openobserve-android-ndk = { group = "ai.openobserve", name = "o2-sdk-android-ndk", version.ref = "openObserveAndroid" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

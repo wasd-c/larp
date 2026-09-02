@@ -2,6 +2,7 @@ package com.anis.larp.ui.freemode
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import com.anis.larp.model.ModelPreferences
 import com.anis.larp.model.PromptModelCatalog
 import com.anis.larp.model.speechRecognitionLocaleFor
@@ -11,6 +12,7 @@ import com.anis.larp.learning.LearningContentAction
 import com.anis.larp.learning.LearningContentRepository
 import com.anis.larp.learning.Lesson
 import com.anis.larp.learning.YoutubeTranscriptProvider
+import com.anis.larp.telemetry.Telemetry
 import com.google.mlkit.genai.common.audio.AudioSource
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizer
 import com.google.mlkit.genai.speechrecognition.SpeechRecognizerResponse
@@ -18,6 +20,7 @@ import com.google.mlkit.genai.speechrecognition.speechRecognizerRequest
 import java.util.Locale
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,7 +42,13 @@ class MlKitSpeechRecognizer(
     catalog: PromptModelCatalog
 ) {
     private val applicationContext = context.applicationContext
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = CoroutineScope(
+        SupervisorJob() +
+            Dispatchers.Main.immediate +
+            CoroutineExceptionHandler { _, error ->
+                Telemetry.error("voice_pipeline_unhandled", error)
+            }
+    )
     private val sessionStore = FreeModeSessionStore.getInstance(applicationContext)
     private val learningContentRepository =
         LearningContentRepository.getInstance(applicationContext)
@@ -80,6 +89,14 @@ class MlKitSpeechRecognizer(
         preloadJob?.cancel()
         preloadJob = scope.launch {
             val modelLabel = replyGenerator.selectedModelLabel()
+            val startedAt = SystemClock.elapsedRealtime()
+            Telemetry.event(
+                name = "model_preload_started",
+                attributes = mapOf(
+                    "model_id" to preferences.promptModelId,
+                    "stt_engine" to (preferences.sttModelId ?: "automatic_offline")
+                )
+            )
             updateIdleStatus(
                 message = "$modelLabel se prépare en arrière-plan…",
                 modelLabel = modelLabel
@@ -140,10 +157,27 @@ class MlKitSpeechRecognizer(
                 mutableState.update {
                     it.copy(modelsReady = true, modelReadinessError = null)
                 }
+                Telemetry.event(
+                    name = "model_preload_completed",
+                    attributes = mapOf(
+                        "model_id" to preferences.promptModelId,
+                        "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                        "result" to "success"
+                    )
+                )
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Throwable) {
                 sessionStore.recordError("model_preload", error)
+                Telemetry.error(
+                    operation = "model_preload",
+                    throwable = error,
+                    attributes = mapOf(
+                        "model_id" to preferences.promptModelId,
+                        "duration_ms" to (SystemClock.elapsedRealtime() - startedAt),
+                        "result" to "failure"
+                    )
+                )
                 updateIdleStatus(
                     message = error.message
                         ?: "$modelLabel n'a pas pu être préparé.",
@@ -167,6 +201,14 @@ class MlKitSpeechRecognizer(
     fun submitTextMessage(message: String) {
         val cleanMessage = message.trim().take(MAX_TEXT_MESSAGE_CHARACTERS)
         if (cleanMessage.isBlank() || !mutableState.value.modelsReady) return
+        Telemetry.event(
+            name = "message_sent",
+            attributes = mapOf(
+                "delivery" to "text",
+                "model_id" to preferences.promptModelId,
+                "language" to preferences.nativeLanguageTag
+            )
+        )
         scope.launch { processTextMessage(cleanMessage) }
     }
 
@@ -290,6 +332,14 @@ class MlKitSpeechRecognizer(
         sessionStore.beginOrResume(sessionMetadata())
         conversationActive = true
         conversationPaused = false
+        Telemetry.event(
+            name = "voice_conversation_started",
+            attributes = mapOf(
+                "model_id" to preferences.promptModelId,
+                "stt_engine" to (preferences.sttModelId ?: "automatic_offline"),
+                "language" to preferences.nativeLanguageTag
+            )
+        )
         startListeningTurn(clearReply = true)
     }
 
@@ -331,6 +381,7 @@ class MlKitSpeechRecognizer(
                         "La reconnaissance vocale sur l'appareil n'est pas disponible pour ${locale.toLanguageTag()}."
                     )
                     sessionStore.recordError("speech_recognition_availability", error)
+                    Telemetry.error("speech_recognition_availability", error)
                     mutableState.update {
                         it.copy(
                             phase = SpeechPhase.ERROR,
@@ -409,6 +460,14 @@ class MlKitSpeechRecognizer(
             } catch (error: Throwable) {
                 if (!processingUtterance) {
                     sessionStore.recordError("speech_recognition", error)
+                    Telemetry.error(
+                        operation = "speech_recognition",
+                        throwable = error,
+                        attributes = mapOf(
+                            "stt_engine" to (preferences.sttModelId ?: "automatic_offline"),
+                            "language" to locale.toLanguageTag()
+                        )
+                    )
                     mutableState.update {
                         it.copy(
                             phase = SpeechPhase.ERROR,
@@ -481,6 +540,7 @@ class MlKitSpeechRecognizer(
         if (!conversationActive || conversationPaused) return
         conversationPaused = true
         sessionStore.recordPause("service_or_system_pause")
+        Telemetry.event("voice_conversation_paused")
         cancelActiveTurn(
             conversationRemainsActive = true,
             statusMessage = "Conversation en pause"
@@ -491,6 +551,7 @@ class MlKitSpeechRecognizer(
         if (!conversationActive || !conversationPaused) return
         conversationPaused = false
         sessionStore.beginOrResume(sessionMetadata())
+        Telemetry.event("voice_conversation_resumed")
         startListeningTurn(clearReply = false)
     }
 
@@ -504,6 +565,7 @@ class MlKitSpeechRecognizer(
         replyGenerator.endConversation()
         sessionStore.endExplicitly()
         if (!wasActive) return
+        Telemetry.event("voice_conversation_stopped")
         cancelActiveTurn(
             conversationRemainsActive = false,
             statusMessage = "Conversation terminée"
@@ -542,9 +604,12 @@ class MlKitSpeechRecognizer(
     }
 
     fun reportPermissionDenied() {
-        sessionStore.recordError(
-            "microphone_permission",
-            SecurityException("Autorisation du microphone refusée.")
+        val error = SecurityException("Autorisation du microphone refusée.")
+        sessionStore.recordError("microphone_permission", error)
+        Telemetry.error(
+            operation = "permission_denied",
+            throwable = error,
+            attributes = mapOf("permission" to "microphone")
         )
         mutableState.update {
             it.copy(
@@ -555,9 +620,12 @@ class MlKitSpeechRecognizer(
     }
 
     fun reportNotificationPermissionDenied() {
-        sessionStore.recordError(
-            "notification_permission",
-            SecurityException("Autorisation des notifications refusée.")
+        val error = SecurityException("Autorisation des notifications refusée.")
+        sessionStore.recordError("notification_permission", error)
+        Telemetry.error(
+            operation = "permission_denied",
+            throwable = error,
+            attributes = mapOf("permission" to "notifications")
         )
         mutableState.update {
             it.copy(
@@ -570,6 +638,7 @@ class MlKitSpeechRecognizer(
 
     fun reportForegroundServiceFailure(error: Throwable) {
         sessionStore.recordError("foreground_service", error)
+        Telemetry.error("foreground_service", error)
         mutableState.update {
             it.copy(
                 phase = SpeechPhase.ERROR,
@@ -670,6 +739,15 @@ class MlKitSpeechRecognizer(
             localeTag = currentState.locale.toLanguageTag(),
             recognitionMode = currentState.recognitionMode
         )
+        Telemetry.event(
+            name = "message_sent",
+            attributes = mapOf(
+                "delivery" to "voice",
+                "model_id" to preferences.promptModelId,
+                "stt_engine" to currentState.recognitionMode,
+                "language" to currentState.locale.toLanguageTag()
+            )
+        )
         mutableState.update {
             it.copy(
                 phase = SpeechPhase.THINKING,
@@ -687,6 +765,7 @@ class MlKitSpeechRecognizer(
         var restartImmediately = false
         var restartAfterFailure = false
         var failureStage = "reply_generation"
+        val replyStartedAt = SystemClock.elapsedRealtime()
         try {
             val generatedReply = replyGenerator.generateReply(
                 transcript = transcript,
@@ -716,13 +795,37 @@ class MlKitSpeechRecognizer(
                 reply = generatedReply,
                 ttsVoiceName = preferences.ttsVoiceName
             )
+            Telemetry.event(
+                name = "reply_received",
+                attributes = mapOf(
+                    "delivery" to "voice",
+                    "model_id" to preferences.promptModelId,
+                    "model_provider" to generatedReply.modelName,
+                    "acceleration" to generatedReply.acceleration,
+                    "language" to generatedReply.locale.toLanguageTag(),
+                    "duration_ms" to (SystemClock.elapsedRealtime() - replyStartedAt)
+                )
+            )
             failureStage = "text_to_speech"
+            val ttsStartedAt = SystemClock.elapsedRealtime()
+            Telemetry.event(
+                name = "tts_started",
+                attributes = mapOf("language" to generatedReply.locale.toLanguageTag())
+            )
             val spokenVoice = speechSynthesizer.speak(
                 text = generatedReply.text,
                 requestedLocale = generatedReply.locale,
                 selectedVoiceName = preferences.ttsVoiceName
             )
             sessionStore.recordTtsCompleted(spokenVoice.name)
+            Telemetry.event(
+                name = "tts_completed",
+                attributes = mapOf(
+                    "language" to generatedReply.locale.toLanguageTag(),
+                    "duration_ms" to (SystemClock.elapsedRealtime() - ttsStartedAt),
+                    "result" to "success"
+                )
+            )
             mutableState.update {
                 it.copy(
                     phase = if (conversationActive && !conversationPaused) {
@@ -743,6 +846,15 @@ class MlKitSpeechRecognizer(
             throw cancellation
         } catch (error: Throwable) {
             sessionStore.recordError(failureStage, error)
+            Telemetry.error(
+                operation = failureStage,
+                throwable = error,
+                attributes = mapOf(
+                    "delivery" to "voice",
+                    "model_id" to preferences.promptModelId,
+                    "duration_ms" to (SystemClock.elapsedRealtime() - replyStartedAt)
+                )
+            )
             mutableState.update {
                 it.copy(
                     phase = SpeechPhase.ERROR,
@@ -805,6 +917,7 @@ class MlKitSpeechRecognizer(
         }
 
         var restartVoice = false
+        val replyStartedAt = SystemClock.elapsedRealtime()
         try {
             val generatedReply = replyGenerator.generateReply(
                 transcript = message,
@@ -817,6 +930,17 @@ class MlKitSpeechRecognizer(
                 reply = generatedReply,
                 ttsVoiceName = null,
                 delivery = "text"
+            )
+            Telemetry.event(
+                name = "reply_received",
+                attributes = mapOf(
+                    "delivery" to "text",
+                    "model_id" to preferences.promptModelId,
+                    "model_provider" to generatedReply.modelName,
+                    "acceleration" to generatedReply.acceleration,
+                    "language" to generatedReply.locale.toLanguageTag(),
+                    "duration_ms" to (SystemClock.elapsedRealtime() - replyStartedAt)
+                )
             )
             mutableState.update {
                 it.copy(
@@ -846,6 +970,15 @@ class MlKitSpeechRecognizer(
             throw cancellation
         } catch (error: Throwable) {
             sessionStore.recordError("text_reply_generation", error)
+            Telemetry.error(
+                operation = "text_reply_generation",
+                throwable = error,
+                attributes = mapOf(
+                    "delivery" to "text",
+                    "model_id" to preferences.promptModelId,
+                    "duration_ms" to (SystemClock.elapsedRealtime() - replyStartedAt)
+                )
+            )
             mutableState.update {
                 it.copy(
                     phase = SpeechPhase.ERROR,
@@ -864,6 +997,19 @@ class MlKitSpeechRecognizer(
 
     private fun onContentActionExecuted(action: LearningContentAction) {
         sessionStore.recordToolAction(action)
+        val contentKind = when (action) {
+            is LearningContentAction.CreateLessonContent,
+            is LearningContentAction.CreateExercise -> "exercise"
+            is LearningContentAction.CreateLesson -> "lesson"
+        }
+        Telemetry.event(
+            name = "learning_content_created",
+            attributes = mapOf(
+                "content_kind" to contentKind,
+                "model_id" to preferences.promptModelId,
+                "language" to preferences.targetLanguage.languageTag
+            )
+        )
         val createdContent = when (action) {
             is LearningContentAction.CreateLessonContent -> {
                 val exercise = learningContentRepository.state.value.exercises
